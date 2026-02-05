@@ -1,0 +1,29 @@
+# Anti-trash policy
+artifacts/
+runs/
+logs/
+cache/
+.attic/
+dumps/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv_*/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS noise
+.DS_Store
+*:Zone.Identifier
+
+# Runtime pointers
+*.pid
+
+# Local secrets
+.secret/
+.secrets/
+.env
+.env.*

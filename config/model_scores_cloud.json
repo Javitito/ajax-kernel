@@ -1,0 +1,114 @@
+{
+  "groq:llama-3.1-8b-instant": {
+    "provider": "groq",
+    "model_id": "llama-3.1-8b-instant",
+    "tier": "balanced",
+    "roles": ["brain", "council", "scout"],
+    "modes": ["planner", "verifier", "chatter"],
+    "scores": {
+      "planning": 0.72,
+      "json_tools": 0.80,
+      "analysis": 0.65,
+      "verifier": 0.65
+    },
+    "latency_ms": 600,
+    "cost_hint": "low",
+    "last_bench": "seed"
+  },
+  "groq:llama-3.1-70b-versatile": {
+    "provider": "groq",
+    "model_id": "llama-3.1-70b-versatile",
+    "tier": "balanced",
+    "roles": ["brain", "council"],
+    "modes": ["planner", "verifier"],
+    "scores": {
+      "planning": 0.88,
+      "json_tools": 0.90,
+      "analysis": 0.90,
+      "verifier": 0.82
+    },
+    "latency_ms": 1200,
+    "cost_hint": "med",
+    "last_bench": "seed"
+  },
+  "groq:llama-3.3-70b-versatile": {
+    "provider": "groq",
+    "model_id": "llama-3.3-70b-versatile",
+    "tier": "balanced",
+    "roles": ["brain", "council"],
+    "modes": ["planner", "verifier"],
+    "scores": {
+      "planning": 0.90,
+      "json_tools": 0.91,
+      "analysis": 0.92,
+      "verifier": 0.85
+    },
+    "latency_ms": 1400,
+    "cost_hint": "med",
+    "last_bench": "seed"
+  },
+  "qwen_cloud:qwen2.5-7b-instruct": {
+    "provider": "qwen_cloud",
+    "model_id": "qwen2.5-7b-instruct",
+    "tier": "cheap",
+    "roles": ["brain", "council", "scout"],
+    "modes": ["planner", "verifier", "chatter"],
+    "scores": {
+      "planning": 0.80,
+      "json_tools": 0.85,
+      "analysis": 0.78,
+      "verifier": 0.70
+    },
+    "latency_ms": 900,
+    "cost_hint": "low",
+    "last_bench": "seed"
+  },
+  "qwen_cli:qwen3:8b": {
+    "provider": "qwen_cli",
+    "model_id": "qwen3:8b",
+    "tier": "cheap",
+    "roles": ["council", "scout"],
+    "modes": ["planner", "verifier", "chatter"],
+    "scores": {
+      "planning": 0.70,
+      "json_tools": 0.75,
+      "analysis": 0.70,
+      "verifier": 0.65
+    },
+    "latency_ms": 800,
+    "cost_hint": "low",
+    "last_bench": "seed"
+  },
+  "gemini_cli:gemini-2.5-flash": {
+    "provider": "gemini_cli",
+    "model_id": "gemini-2.5-flash",
+    "tier": "balanced",
+    "roles": ["brain", "verifier"],
+    "modes": ["planner", "verifier"],
+    "scores": {
+      "planning": 0.84,
+      "json_tools": 0.86,
+      "analysis": 0.88,
+      "verifier": 0.90
+    },
+    "latency_ms": 1600,
+    "cost_hint": "med",
+    "last_bench": "seed"
+  },
+  "gemini_cli:gemini-2.5-pro": {
+    "provider": "gemini_cli",
+    "model_id": "gemini-2.5-pro",
+    "tier": "premium",
+    "roles": ["brain", "verifier"],
+    "modes": ["planner", "verifier"],
+    "scores": {
+      "planning": 0.90,
+      "json_tools": 0.92,
+      "analysis": 0.93,
+      "verifier": 0.94
+    },
+    "latency_ms": 2000,
+    "cost_hint": "high",
+    "last_bench": "seed"
+  }
+}

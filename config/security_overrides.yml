@@ -1,0 +1,29 @@
+{
+  "tools_allowlist": [
+    "file.read_text",
+    "file.search",
+    "file.write_text",
+    "file.list_dir",
+    "system.get_info",
+    "process.get_list",
+    "network.get_status"
+  ],
+  "directories_allowlist": [
+    "artifacts",
+    "data",
+    "inbox",
+    "outbox",
+    "workspace",
+    "temp",
+    "cache",
+    "models"
+  ],
+  "require_confirmation_for": [
+    "file.write_text",
+    "file.delete",
+    "system.shutdown",
+    "network.connect"
+  ],
+  "max_file_size_mb": 100,
+  "max_execution_time_s": 300
+}

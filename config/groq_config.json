@@ -1,0 +1,40 @@
+{
+  "api_keys": [
+    "${GROQ_API_KEY}",
+    "${GROQ_API_KEY_ALT1}",
+    "${GROQ_API_KEY_ALT2}"
+  ],
+  "models": [
+    "llama-3.1-8b-instant",
+    "llama-3.1-70b-versatile",
+    "llama3-groq-8b-8192-tool-use-preview",
+    "llama3-groq-70b-8192-tool-use-preview"
+  ],
+  "temperature": 0.7,
+  "timeout": 30,
+  "max_tokens_default": 1024,
+  "agent_metadata": {
+    "name": "groq-agent",
+    "version": "2.0.0",
+    "provider": "groq",
+    "capabilities": [
+      "text-generation",
+      "chat-completion",
+      "context-aware-processing",
+      "multi-key-fallback",
+      "multi-model-fallback"
+    ],
+    "models_supported": [
+      "llama-3.1-8b-instant",
+      "llama-3.1-70b-versatile",
+      "llama3-groq-8b-8192-tool-use-preview",
+      "llama3-groq-70b-8192-tool-use-preview"
+    ],
+    "rate_limits": {
+      "llama-3.1-8b-instant": {"requests_per_minute": 100, "tokens_per_minute": 14000},
+      "llama-3.1-70b-versatile": {"requests_per_minute": 100, "tokens_per_minute": 14000},
+      "llama3-groq-8b-8192-tool-use-preview": {"requests_per_minute": 100, "tokens_per_minute": 14000},
+      "llama3-groq-70b-8192-tool-use-preview": {"requests_per_minute": 100, "tokens_per_minute": 14000}
+    }
+  }
+}

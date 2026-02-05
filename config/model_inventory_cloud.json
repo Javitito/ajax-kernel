@@ -1,0 +1,323 @@
+{
+  "providers": [
+    {
+      "provider": "groq",
+      "id": "llama-3.3-70b-versatile",
+      "source": "static",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "llama-3.3-70b-versatile",
+        "modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "groq",
+      "id": "llama-3.1-8b-instant",
+      "source": "static",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "llama-3.1-8b-instant",
+        "modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "groq",
+      "id": "qwen/qwen3-32b",
+      "source": "web_catalog",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "qwen/qwen3-32b",
+        "modality": [
+          "text"
+        ],
+        "tier": "balanced",
+        "context_window": 128000
+      }
+    },
+    {
+      "provider": "groq",
+      "id": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "source": "web_catalog",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "modality": [
+          "text"
+        ],
+        "tier": "fast",
+        "context_window": 64000
+      }
+    },
+    {
+      "provider": "groq",
+      "id": "moonshotai/kimi-k2-instruct",
+      "source": "web_catalog",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "moonshotai/kimi-k2-instruct",
+        "modality": [
+          "text"
+        ],
+        "tier": "smart",
+        "context_window": 256000
+      }
+    },
+    {
+      "provider": "lmstudio",
+      "id": "qwen/qwen3-vl-4b",
+      "source": "http_openai",
+      "modalities": [
+        "text",
+        "vision"
+      ],
+      "raw": {
+        "id": "qwen/qwen3-vl-4b",
+        "object": "model",
+        "owned_by": "organization_owner"
+      }
+    },
+    {
+      "provider": "lmstudio",
+      "id": "text-embedding-nomic-embed-text-v1.5",
+      "source": "http_openai",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "text-embedding-nomic-embed-text-v1.5",
+        "object": "model",
+        "owned_by": "organization_owner"
+      }
+    },
+    {
+      "provider": "lmstudio",
+      "id": "liquid/lfm2.5-1.2b",
+      "source": "http_openai",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "liquid/lfm2.5-1.2b",
+        "object": "model",
+        "owned_by": "organization_owner"
+      }
+    },
+    {
+      "provider": "lmstudio",
+      "id": "lfm2-8b-a1b",
+      "source": "web_catalog",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "lfm2-8b-a1b",
+        "modality": [
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "qwen_cli",
+      "id": "qwen3:8b",
+      "source": "static",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "qwen3:8b",
+        "modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "qwen_cloud",
+      "id": "qwen2.5-7b-instruct",
+      "source": "static",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "qwen2.5-7b-instruct",
+        "modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "gemini_cli",
+      "id": "auto",
+      "source": "static",
+      "modalities": [
+        "text",
+        "vision"
+      ],
+      "raw": {
+        "id": "auto",
+        "modalities": [
+          "text",
+          "vision"
+        ]
+      }
+    },
+    {
+      "provider": "gemini_cli",
+      "id": "gemini-2.5-flash",
+      "source": "static",
+      "modalities": [
+        "text",
+        "vision"
+      ],
+      "raw": {
+        "id": "gemini-2.5-flash",
+        "modalities": [
+          "text",
+          "vision"
+        ]
+      }
+    },
+    {
+      "provider": "gemini_cli",
+      "id": "gemini-2.5-pro",
+      "source": "static",
+      "modalities": [
+        "text",
+        "vision"
+      ],
+      "raw": {
+        "id": "gemini-2.5-pro",
+        "modalities": [
+          "text",
+          "vision"
+        ]
+      }
+    },
+    {
+      "provider": "static_local",
+      "id": "qwen/qwen3-vl-4b",
+      "source": "static",
+      "modalities": [
+        "vision",
+        "text"
+      ],
+      "raw": {
+        "id": "qwen/qwen3-vl-4b",
+        "modalities": [
+          "vision",
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "static_local",
+      "id": "lfm2-vl-1.6b",
+      "source": "static",
+      "modalities": [
+        "vision",
+        "text"
+      ],
+      "raw": {
+        "id": "lfm2-vl-1.6b",
+        "modalities": [
+          "vision",
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "codex_brain",
+      "id": "gpt-5.2",
+      "source": "static",
+      "modalities": [
+        "text",
+        "vision"
+      ],
+      "raw": {
+        "id": "gpt-5.2",
+        "modalities": [
+          "text",
+          "vision"
+        ],
+        "notes": "Codex Premium v5.2"
+      }
+    },
+    {
+      "provider": "codex_cli",
+      "id": "gpt-5.2",
+      "source": "static",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "gpt-5.2",
+        "modalities": [
+          "text"
+        ]
+      }
+    },
+    {
+      "provider": "codex_brain",
+      "id": "gpt-5.1-codex-max",
+      "source": "static",
+      "modalities": [
+        "text",
+        "vision"
+      ],
+      "raw": {
+        "id": "gpt-5.1-codex-max",
+        "modalities": [
+          "text",
+          "vision"
+        ],
+        "notes": "Modelo Brain principal"
+      }
+    },
+    {
+      "provider": "codex_brain",
+      "id": "gpt-5.1-codex-mini",
+      "source": "static",
+      "modalities": [
+        "text",
+        "vision"
+      ],
+      "raw": {
+        "id": "gpt-5.1-codex-mini",
+        "modalities": [
+          "text",
+          "vision"
+        ],
+        "notes": "Modelo Brain rápido"
+      }
+    },
+    {
+      "provider": "codex_brain",
+      "id": "gpt-5.1",
+      "source": "static",
+      "modalities": [
+        "text"
+      ],
+      "raw": {
+        "id": "gpt-5.1",
+        "modalities": [
+          "text"
+        ],
+        "notes": "Texto base"
+      }
+    }
+  ],
+  "fetched_at": "2026-02-04T16:33:39Z"
+}

@@ -1,0 +1,35 @@
+{
+  "brain.main": {
+    "cheap": "groq:llama-3.1-8b-instant",
+    "emergency": "groq:llama-3.1-8b-instant",
+    "balanced": "groq:llama-3.3-70b-versatile",
+    "premium": "codex_brain:gpt-5.2"
+  },
+  "council.main": {
+    "cheap": "groq:llama-3.1-8b-instant",
+    "emergency": "groq:llama-3.1-8b-instant",
+    "balanced": "groq:llama-3.3-70b-versatile",
+    "premium": "codex_brain:gpt-5.2"
+  },
+  "scout.main": {
+    "cheap": "groq:llama-3.1-8b-instant",
+    "emergency": "groq:llama-3.1-8b-instant",
+    "balanced": "groq:llama-3.3-70b-versatile",
+    "premium": "gemini_cli:auto"
+  },
+  "chat.fast": {
+    "cheap": "groq:llama-3.1-8b-instant",
+    "emergency": "groq:llama-3.1-8b-instant",
+    "balanced": "groq:llama-3.3-70b-versatile",
+    "premium": "codex_cli:gpt-5.2"
+  },
+  "brain.codex": {
+    "premium": "codex_brain:gpt-5.2"
+  },
+  "council.codex": {
+    "premium": "codex_brain:gpt-5.2"
+  },
+  "chat.codex": {
+    "premium": "codex_brain:gpt-5.2"
+  }
+}

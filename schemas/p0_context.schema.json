@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "P0 Context",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "created_utc",
+    "objective_query",
+    "scoring_method",
+    "score_threshold",
+    "source_resolution",
+    "sources_checked",
+    "refs_used",
+    "gaps_detected",
+    "novelty",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "envelope_id": {"type": "string"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "objective_query": {"type": "string"},
+    "scoring_method": {"type": "string"},
+    "score_threshold": {"type": "number"},
+    "source_resolution": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "resolved_from", "path"],
+        "properties": {
+          "kind": {"type": "string", "enum": ["history", "pepitas"]},
+          "resolved_from": {"type": "string"},
+          "path": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "sources_checked": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind", "scanned", "truncated"],
+        "properties": {
+          "path": {"type": "string"},
+          "kind": {"type": "string", "enum": ["history", "pepitas"]},
+          "scanned": {"type": "integer", "minimum": 0},
+          "matched": {"type": "integer", "minimum": 0},
+          "truncated": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "refs_used": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "id", "score", "excerpt"],
+        "properties": {
+          "type": {"type": "string", "enum": ["history", "pepita"]},
+          "id": {"type": "string"},
+          "score": {"type": "number", "minimum": 0, "maximum": 1},
+          "excerpt": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "gaps_detected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "note"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["contradiction", "repeat_fail", "no_stable_task", "unknown"]
+          },
+          "note": {"type": "string"},
+          "signals": {"type": "array", "items": {"type": "string"}},
+          "ref_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "novelty": {"type": "boolean"},
+    "summary": {"type": "string"}
+  },
+  "additionalProperties": true
+}

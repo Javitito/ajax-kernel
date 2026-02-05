@@ -1,0 +1,20 @@
+{
+  "canonical": [
+    "execution_result.success",
+    "driver.screenshot",
+    "driver.active_window",
+    "driver.ui_inspect",
+    "uia.active_window_process_in",
+    "vision.visual_audit",
+    "runner.ok"
+  ],
+  "aliases": {
+    "success": "execution_result.success",
+    "runner_success": "runner.ok",
+    "uia.active_window": "uia.active_window_process_in",
+    "driver.activewindow": "driver.active_window",
+    "driver.ui": "driver.ui_inspect",
+    "vision.audit": "vision.visual_audit",
+    "active_window_process": "uia.active_window_process_in"
+  }
+}

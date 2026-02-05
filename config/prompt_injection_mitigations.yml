@@ -1,0 +1,40 @@
+{
+  "prompt_sanitization": {
+    "enabled": true,
+    "patterns_to_block": [
+      "<<SYS>>",
+      "<</SYS>>",
+      "[INST]",
+      "[/INST]",
+      "system:",
+      "assistant:",
+      "user:"
+    ],
+    "max_prompt_length": 2000,
+    "allowed_tags": [
+      "<query>",
+      "</query>"
+    ]
+  },
+  "output_filtering": {
+    "enabled": true,
+    "patterns_to_strip": [
+      "system prompt",
+      "internal instructions",
+      "confidential"
+    ],
+    "allowed_output_prefixes": [
+      "Respuesta:",
+      "Resultado:",
+      "Salida:"
+    ]
+  },
+  "confirmation_required": [
+    "delete",
+    "remove",
+    "erase",
+    "clear",
+    "shutdown",
+    "restart"
+  ]
+}

@@ -1,0 +1,331 @@
+{
+  "providers": {
+    "codex_brain": {
+      "command": [
+        "codex",
+        "exec",
+        "-c",
+        "model_reasoning_effort=\"high\"",
+        "--model",
+        "{model}",
+        "--json"
+      ],
+      "default_model": "gpt-5.2",
+      "disabled": false,
+      "kind": "codex_cli_jsonl",
+      "modes": [
+        "planner",
+        "vision",
+        "verifier",
+        "chatter"
+      ],
+      "requires_auth": true,
+      "roles": [
+        "brain",
+        "council"
+      ],
+      "static_models": [
+        {
+          "id": "gpt-5.2",
+          "modalities": [
+            "text",
+            "vision"
+          ],
+          "notes": "Modelo premium (Codex CLI)"
+        }
+      ],
+      "supports_premium": true,
+      "tier": "premium",
+      "timeout_seconds": 60,
+      "planning_timeout_seconds": 25
+    },
+    "codex_cli": {
+      "command": [
+        "cdx",
+        "models",
+        "--json"
+      ],
+      "disabled": true,
+      "env": {},
+      "format": "json",
+      "kind": "cli",
+      "modes": [
+        "planner",
+        "verifier",
+        "chatter"
+      ],
+      "requires_auth": true,
+      "supports_premium": true,
+      "tier": "premium",
+      "vision_hints": [
+        "vision",
+        "vl"
+      ],
+      "workdir": "."
+    },
+    "gemini_cli": {
+      "command": [
+        "python",
+        "bin/provider_cli_bridge.py",
+        "--provider",
+        "gemini_cli",
+        "--model",
+        "{model}",
+        "--prompt",
+        "{prompt}"
+      ],
+      "default_model": "auto",
+      "format": "text",
+      "kind": "cli",
+      "models": {
+        "auto": "auto",
+        "flash": "gemini-2.5-flash",
+        "pro": "gemini-2.5-pro"
+      },
+      "modes": [
+        "planner",
+        "verifier",
+        "chatter"
+      ],
+      "requires_auth": false,
+      "roles": [
+        "brain",
+        "council",
+        "scout"
+      ],
+      "static_models": [
+        {
+          "id": "auto",
+          "modalities": [
+            "text",
+            "vision"
+          ],
+          "notes": "Selector automático (Gemini 2.5)"
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "modalities": [
+            "text",
+            "vision"
+          ]
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "modalities": [
+            "text",
+            "vision"
+          ]
+        }
+      ],
+      "supports_premium": true,
+      "tier": "balanced",
+      "timeout_seconds": 90
+    },
+    "groq": {
+      "api_key_env": "GROQ_API_KEY",
+      "base_url": "https://api.groq.com/openai/v1",
+      "default_model": "llama-3.3-70b-versatile",
+      "kind": "http_openai",
+      "models": {
+        "balanced": "llama-3.3-70b-versatile",
+        "fast": "llama-3.1-8b-instant",
+        "smart": "llama-3.3-70b-versatile"
+      },
+      "modes": [
+        "planner",
+        "verifier",
+        "chatter"
+      ],
+      "requires_auth": true,
+      "roles": [
+        "brain",
+        "council",
+        "scout"
+      ],
+      "static_models": [
+        {
+          "id": "llama-3.3-70b-versatile",
+          "modalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "llama-3.1-8b-instant",
+          "modalities": [
+            "text"
+          ]
+        }
+      ],
+      "supports_premium": false,
+      "tier": "balanced",
+      "timeout_seconds": 20,
+      "vision_hints": [
+        "vision",
+        "vl",
+        "llava"
+      ]
+    },
+    "lmstudio": {
+      "api_key_env": null,
+      "base_url": "http://localhost:1235/v1",
+      "default_model": "lfm2-8b-a1b",
+      "kind": "http_openai",
+      "modes": [
+        "planner",
+        "verifier",
+        "chatter"
+      ],
+      "requires_auth": false,
+      "roles": [
+        "brain",
+        "council",
+        "scout"
+      ],
+      "supports_premium": false,
+      "tier": "cheap",
+      "vision_hints": [
+        "vision",
+        "vl"
+      ]
+    },
+    "lmstudio_vision": {
+      "api_key_env": null,
+      "base_url": "http://localhost:1235/v1",
+      "default_model": "qwen/qwen3-vl-4b",
+      "kind": "http_openai",
+      "modes": [
+        "planner",
+        "vision",
+        "verifier"
+      ],
+      "requires_auth": false,
+      "roles": [
+        "vision"
+      ],
+      "supports_premium": false,
+      "tier": "cheap",
+      "vision_hints": [
+        "vision",
+        "vl",
+        "qwen"
+      ]
+    },
+    "qwen_cli": {
+      "command": [
+        "qwen",
+        "models"
+      ],
+      "default_model": "qwen3:8b",
+      "disabled": true,
+      "env": {},
+      "format": "text",
+      "kind": "cli",
+      "list_command": [
+        "qwen",
+        "models"
+      ],
+      "list_format": "text",
+      "modes": [
+        "planner",
+        "verifier",
+        "chatter"
+      ],
+      "requires_auth": false,
+      "roles": [
+        "council",
+        "scout"
+      ],
+      "static_models": [
+        {
+          "id": "qwen3:8b",
+          "modalities": [
+            "text"
+          ]
+        }
+      ],
+      "supports_premium": false,
+      "tier": "cheap",
+      "vision_hints": [
+        "vl",
+        "vision"
+      ],
+      "workdir": "."
+    },
+    "qwen_cloud": {
+      "command": [
+        "python",
+        "bin/provider_cli_bridge.py",
+        "--provider",
+        "qwen_cloud",
+        "--model",
+        "{model}",
+        "--prompt",
+        "{prompt}"
+      ],
+      "default_model": "qwen3-coder-plus-2025-09-23",
+      "env": {},
+      "format": "text",
+      "kind": "cli",
+      "models": {
+        "coder": "qwen3-coder-plus-2025-09-23",
+        "vision": "qwen3-vl-plus-2025-09-23"
+      },
+      "modes": [
+        "planner",
+        "verifier",
+        "chatter"
+      ],
+      "requires_auth": false,
+      "roles": [
+        "brain",
+        "council",
+        "scout"
+      ],
+      "static_models": [
+        {
+          "id": "qwen3-coder-plus-2025-09-23",
+          "modalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "qwen3-vl-plus-2025-09-23",
+          "modalities": [
+            "vision",
+            "text"
+          ]
+        }
+      ],
+      "supports_premium": false,
+      "tier": "cheap",
+      "vision_hints": [
+        "vl",
+        "vision"
+      ],
+      "workdir": "."
+    },
+    "static_local": {
+      "kind": "static",
+      "models": [
+        {
+          "id": "qwen/qwen3-vl-4b",
+          "modalities": [
+            "vision",
+            "text"
+          ]
+        },
+        {
+          "id": "lfm2-vl-1.6b",
+          "modalities": [
+            "vision",
+            "text"
+          ]
+        }
+      ],
+      "vision_whitelist": [
+        "vl",
+        "vision"
+      ]
+    }
+  }
+}

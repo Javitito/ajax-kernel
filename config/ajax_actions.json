@@ -1,0 +1,143 @@
+[
+  {
+    "name": "desktop.isolate_active_window",
+    "description": "Minimiza todas las ventanas y restaura la ventana activa original.",
+    "risk": "medium",
+    "category": "desktop",
+    "vision_required": false,
+    "args_schema": {}
+  },
+  {
+    "name": "app.launch",
+    "description": "Lanza una aplicación por proceso o ruta.",
+    "risk": "medium",
+    "category": "app",
+    "vision_required": false,
+    "args_schema": {
+      "process": "string (opcional)",
+      "path": "string (opcional)",
+      "args": "array de strings (opcional)"
+    }
+  },
+  {
+    "name": "window.focus",
+    "description": "Lleva al frente una ventana que coincida por título o proceso.",
+    "risk": "low",
+    "category": "window_management",
+    "vision_required": false,
+    "args_schema": {
+      "title_contains": "string (opcional)",
+      "process": "string (opcional)"
+    }
+  },
+  {
+    "name": "keyboard.type",
+    "description": "Escribe texto en la ventana activa; submit:true para enviar Enter al final.",
+    "risk": "medium",
+    "category": "input",
+    "vision_required": false,
+    "args_schema": {
+      "text": "string (obligatorio)",
+      "submit": "bool (opcional)"
+    }
+  },
+  {
+    "name": "keyboard.hotkey",
+    "description": "Envía una combinación de teclas a la ventana activa (p.ej. ['ctrl','s']).",
+    "risk": "medium",
+    "category": "input",
+    "vision_required": false,
+    "args_schema": {
+      "keys": "array de strings (obligatorio)"
+    }
+  },
+  {
+    "name": "await_user_input",
+    "description": "Pausa segura: pide confirmación/aclaración al usuario (no ejecuta UI).",
+    "risk": "low",
+    "category": "input",
+    "vision_required": false,
+    "tags": ["ui_basic"],
+    "args_schema": {
+      "prompt": "string (opcional, pregunta breve para el usuario)"
+    }
+  },
+  {
+    "name": "vision.delta_tag_screen",
+    "description": "Captura pantalla y procesa sólo tiles que han cambiado desde la última llamada.",
+    "risk": "low",
+    "category": "vision",
+    "vision_required": true,
+    "args_schema": {
+      "tile_size": "entero (opcional, por defecto 256)",
+      "threshold": "entero (opcional, distancia de hash, por defecto 6)",
+      "min_persist_ms": "entero (opcional, compresión temporal, por defecto 800)",
+      "max_tiles": "entero (opcional, tope de tiles a procesar, por defecto 8)",
+      "model": "string (opcional, modelo VL a usar)"
+    }
+  },
+  {
+    "name": "vision.extract_affordances",
+    "description": "Convierte la salida de vision.delta_tag_screen en botones/diálogos accionables.",
+    "risk": "low",
+    "category": "vision",
+    "vision_required": true,
+    "args_schema": {
+      "delta_result": "objeto JSON devuelto por vision.delta_tag_screen"
+    }
+  },
+  {
+    "name": "probe_driver",
+    "description": "Probe local del driver (health/openapi/shot+inspect) y persistencia de evidencia.",
+    "risk": "low",
+    "category": "infra",
+    "vision_required": false,
+    "args_schema": {
+      "out_dir": "string (opcional, default artifacts/driver_probe/...)",
+      "include_openapi": "bool (opcional, default true)",
+      "include_shot": "bool (opcional, default true)",
+      "include_screenshot": "bool (opcional, default true)",
+      "include_window_inspect": "bool (opcional, default true)",
+      "timeout_s": "float (opcional)"
+    }
+  },
+  {
+    "name": "lab_web_discovery",
+    "description": "LAB-only web discovery via ddgs; guarda report.md y sources.json.",
+    "risk": "low",
+    "category": "lab",
+    "vision_required": false,
+    "args_schema": {
+      "topic": "string (obligatorio)",
+      "days": "entero (opcional)",
+      "strict": "bool (opcional)",
+      "max_results": "entero (opcional)"
+    }
+  },
+  {
+    "name": "lab_codex_web",
+    "description": "LAB-only Codex web search fallback si lab_web no encuentra fuentes oficiales.",
+    "risk": "medium",
+    "category": "lab",
+    "vision_required": false,
+    "args_schema": {
+      "topic": "string (obligatorio)",
+      "prompt": "string (opcional, default=topic)",
+      "allowlist_domains": "lista de dominios oficiales (obligatorio)",
+      "days": "entero (opcional)",
+      "max_results": "entero (opcional)"
+    }
+  },
+  {
+    "name": "ops.fix_ports_sessions",
+    "description": "Corrige swap de sesiones 5010/5012: detiene listeners erróneos, relanza tareas correctas y verifica con doctor.",
+    "risk": "high",
+    "category": "ops",
+    "vision_required": false,
+    "args_schema": {
+      "ports": "array de ints (opcional, default [5010, 5012])",
+      "verify_only": "bool (opcional)",
+      "timeout_s": "int (opcional)"
+    }
+  }
+]

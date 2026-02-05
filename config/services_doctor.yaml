@@ -1,0 +1,8 @@
+schema: ajax.services_doctor.v1
+
+# En este setup, todo corre en la sesión interactiva de Javi.
+# (No se usa el usuario Windows "AJAX" para el arranque operativo.)
+mode: single_user
+single_user: Javi
+ports: [5010, 5012]
+

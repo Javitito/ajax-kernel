@@ -1,0 +1,18 @@
+{
+  "allowed_commands": [
+    "systemctl --user start",
+    "systemctl --user stop",
+    "systemctl --user restart",
+    "systemctl --user enable",
+    "systemctl --user disable",
+    "systemctl --user daemon-reload",
+    "journalctl --user",
+    "chown",
+    "chmod",
+    "mkdir -p",
+    "cp",
+    "mv",
+    "rm"
+  ],
+  "description": "Allowlist para comandos que pueden ejecutarse con privilegios elevados"
+}

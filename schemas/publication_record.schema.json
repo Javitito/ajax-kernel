@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Publication Record",
+  "type": "object",
+  "required": ["schema_version", "envelope_id", "created_utc", "outcome"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "envelope_id": {"type": "string"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "outcome": {"type": "string", "enum": ["pass"]},
+    "promoted": {"type": "boolean"},
+    "promotion_task": {"type": "string"},
+    "notes": {"type": "string"},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "artifacts": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

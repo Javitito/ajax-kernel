@@ -1,0 +1,9 @@
+# Fallback para descubrimiento de OS
+browsers:
+  - 'brave.exe'
+  - 'chrome.exe'
+  - 'msedge.exe'
+  - 'firefox.exe'
+  - 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe'
+  - 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'
+  - 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'

@@ -1,0 +1,69 @@
+{
+  "wrapper_standards": {
+    "required_flags": [
+      "--version",
+      "--capabilities",
+      "--bench",
+      "--role",
+      "--json"
+    ],
+    "optional_flags": [
+      "--model",
+      "--backend",
+      "--timeout"
+    ],
+    "standard_output_format": {
+      "version": "string",
+      "capabilities": [
+        "list",
+        "string"
+      ],
+      "bench_results": {
+        "latency_ms": "float",
+        "throughput": "float",
+        "accuracy": "float"
+      }
+    }
+  },
+  "model_wrappers": [
+    {
+      "name": "lmstudio_task.py",
+      "path": "bin/lmstudio_task.py",
+      "supported_roles": [
+        "planner",
+        "executor",
+        "verifier"
+      ],
+      "required_caps": [
+        "text-generation",
+        "function-calling"
+      ]
+    },
+    {
+      "name": "qwen_task.py",
+      "path": "bin/qwen_task.py",
+      "supported_roles": [
+        "planner",
+        "executor",
+        "verifier"
+      ],
+      "required_caps": [
+        "code-generation",
+        "reasoning"
+      ]
+    },
+    {
+      "name": "gemini_task.py",
+      "path": "bin/gemini_task.py",
+      "supported_roles": [
+        "planner",
+        "executor",
+        "verifier"
+      ],
+      "required_caps": [
+        "multimodal",
+        "web-search"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+version: "0.1"
+weights:
+  mismatch: 0.7
+  novelty: 0.3
+  friction: 0.5
+bands:
+  - max: 0.3
+    explore_budget: 0.1
+    intensity: "low"
+    gap_threshold: 80
+  - max: 0.7
+    explore_budget: 0.4
+    intensity: "med"
+    gap_threshold: 60
+  - max: 1.0
+    explore_budget: 0.8
+    intensity: "high"
+    gap_threshold: 40
+defaults:
+  user_ambition: 0.5
+  system_capacity: 0.5
+  context_novelty: 0.0

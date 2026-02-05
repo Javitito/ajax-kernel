@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gate Decision",
+  "type": "object",
+  "required": ["schema_version", "envelope_id", "created_utc", "rail", "decision"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "envelope_id": {"type": "string"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "rail": {"type": "string", "enum": ["lab", "prod"]},
+    "decision": {"type": "string", "enum": ["allow", "block"]},
+    "reasons": {"type": "array", "items": {"type": "string"}},
+    "break_glass_required": {"type": "boolean"},
+    "break_glass_ok": {"type": "boolean"}
+  },
+  "additionalProperties": true
+}

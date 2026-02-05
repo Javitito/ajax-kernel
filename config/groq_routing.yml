@@ -1,0 +1,69 @@
+# Configuración de rutas para el agente Groq
+# Este archivo define cómo se enrutan las tareas al agente Groq
+
+routing:
+  # Configuración para el planner usando Groq
+  planner:
+    candidates:
+      - "bin/groq_task.py --role planner --json"
+      - "bin/gemini_task.py --role planner --json"
+      - "bin/qwen_task.py --role planner --json"
+  
+  # Configuración para el executor usando Groq
+  executor:
+    candidates:
+      - "bin/groq_task.py --role executor --json"
+      - "bin/qwen_task.py --role executor --json"
+      - "bin/gemini_task.py --role executor --json"
+  
+  # Configuración para el verifier usando Groq
+  verifier:
+    candidates:
+      - "bin/groq_task.py --role verifier --json"
+      - "bin/qwen_task.py --role verifier --json"
+      - "bin/gemini_task.py --role verifier --json"
+
+# Configuración de supervisión para Groq
+supervision:
+  timeouts_s:
+    planner: 30
+    executor: 20
+    verifier: 25
+    tool: 15
+  
+  retries:
+    planner: 1
+    executor: 1
+    verifier: 1
+  
+  backoff_s: [1, 3, 5]
+  
+  circuit_breaker:
+    failure_threshold: 3
+    window_s: 60
+    cool_down_s: 120
+
+# Configuración de metadatos para enrutamiento inteligente
+metadata:
+  # Permitir el uso de Groq para ciertas tareas
+  groq_allowed: true
+  
+  # Tipos de tareas que son apropiadas para Groq
+  groq_suitable_tasks:
+    - "summarization"
+    - "classification"
+    - "formatting"
+    - "extraction"
+    - "translation"
+    - "simple_qa"
+    - "tagging"
+    - "counting"
+  
+  # Umbrales para considerar una tarea como "rápida"
+  groq_fast_task_length: 100  # caracteres máximos
+  
+  # Modelos Groq recomendados por tipo de tarea
+  groq_models_by_task:
+    fast: "llama-3.1-8b-instant"
+    balanced: "llama-3.1-70b-versatile"
+    smart: "llama-3.3-70b-versatile"

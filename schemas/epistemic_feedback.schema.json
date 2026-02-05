@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Epistemic Feedback",
+  "type": "object",
+  "required": ["schema_version", "envelope_id", "created_utc", "spl"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "envelope_id": {"type": "string"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "spl": {"type": "string"},
+    "learning_signals": {"type": "array", "items": {"type": "string"}},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": true
+}

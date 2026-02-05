@@ -1,0 +1,65 @@
+{
+  "schema": "ajax.provider_timeouts_policy.v1",
+  "version": "2026-01-24",
+  "defaults": {
+    "connect_timeout_ms": 2000,
+    "first_output_timeout_ms": 15000,
+    "stall_timeout_ms": 8000,
+    "total_timeout_ms": 60000
+  },
+  "rails": {
+    "prod": {
+      "defaults": {
+        "first_output_timeout_ms": 20000,
+        "stall_timeout_ms": 10000
+      }
+    },
+    "lab": {
+      "defaults": {
+        "first_output_timeout_ms": 15000,
+        "stall_timeout_ms": 8000
+      }
+    }
+  },
+  "providers": {
+    "codex_brain": {
+      "planning": {
+        "first_output_timeout_ms": 25000,
+        "stall_timeout_ms": 12000,
+        "total_timeout_ms": 90000
+      },
+      "default": {
+        "total_timeout_ms": 60000
+      }
+    },
+    "gemini_cli": {
+      "planning": {
+        "total_timeout_ms": 120000
+      },
+      "default": {
+        "total_timeout_ms": 90000
+      }
+    },
+    "qwen_cloud": {
+      "planning": {
+        "total_timeout_ms": 60000
+      },
+      "default": {
+        "total_timeout_ms": 45000
+      }
+    },
+    "groq": {
+      "planning": {
+        "total_timeout_ms": 20000
+      },
+      "default": {
+        "total_timeout_ms": 20000
+      }
+    },
+    "lmstudio": {
+      "default": {
+        "total_timeout_ms": 45000
+      }
+    }
+  }
+}

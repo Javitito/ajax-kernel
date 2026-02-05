@@ -1,0 +1,33 @@
+schema: ajax.provider_failure_policy.v1
+# Invariantes constitucionales están en AGENTS.md; aquí solo tunables.
+
+planning:
+  max_attempts: 2
+  allow_degraded_planning: false
+  on_no_plan:
+    terminal: WAITING_FOR_USER   # ASK_USER en UX; no "imposible"
+    force_ask_user_on_severe: true
+
+providers:
+  classify_as_quota_exhausted:
+    - "429"
+    - "capacity"
+    - "no capacity"
+    - "quota exhausted"
+  cooldown_seconds_default: 120
+
+cooldowns:
+  client_timeout: 30
+  timeout_ttft: 480
+  timeout_stall: 900
+  provider_unhealthy: 120
+  infra_bridge_error: 120
+
+receipts:
+  required_fields:
+    - schema
+    - ts_utc
+    - ok
+    - reason
+    - provider
+    - error_code

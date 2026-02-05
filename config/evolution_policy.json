@@ -1,0 +1,18 @@
+{
+  "schema": "ajax.evolution.policy.v1",
+  "defaults": {
+    "fail_streak_threshold": 3,
+    "count_waiting_for_user": false,
+    "fail_kinds_excluded": ["waiting_for_user"]
+  },
+  "rails": {
+    "lab": {
+      "defaults": {},
+      "intent_classes": {}
+    },
+    "prod": {
+      "defaults": {},
+      "intent_classes": {}
+    }
+  }
+}

@@ -1,0 +1,105 @@
+providers:
+  groq:
+    kind: http_openai
+    base_url: "https://api.groq.com/openai/v1"
+    api_key_env: "GROQ_API_KEY"
+    default_model: "llama-3.3-70b-versatile"
+    models:
+      fast: "llama-3.1-8b-instant"
+      balanced: "llama-3.3-70b-versatile"
+      smart: "llama-3.3-70b-versatile"
+    roles: ["brain", "council", "scout"]
+    tier: "balanced"
+    modes: ["planner", "verifier", "chatter"]
+    timeout_seconds: 20
+    vision_hints: ["vision", "vl", "llava"]
+    static_models:
+      - id: "llama-3.3-70b-versatile"
+        modalities: ["text"]
+      - id: "llama-3.1-8b-instant"
+        modalities: ["text"]
+  lmstudio:
+    kind: http_openai
+    base_url: "http://localhost:1235/v1"
+    api_key_env: null
+    vision_hints: ["vision", "vl"]
+    tier: "cheap"
+    modes: ["vision"]
+  qwen_cli:
+    kind: cli
+    command: ["qwen", "models"]
+    format: "text"
+    env: {}
+    workdir: "."
+    vision_hints: ["vl", "vision"]
+    roles: ["council", "scout"]
+    tier: "cheap"
+    modes: ["planner", "verifier", "chatter"]
+    default_model: "qwen3:8b"
+    static_models:
+      - id: "qwen3:8b"
+        modalities: ["text"]
+  qwen_cloud:
+    kind: cli
+    command: ["qwen", "-o", "json", "{prompt}"]
+    format: "text"
+    env: {}
+    workdir: "."
+    vision_hints: ["vl", "vision"]
+    roles: ["brain", "council", "scout"]
+    tier: "cheap"
+    modes: ["planner", "verifier", "chatter"]
+    default_model: "qwen2.5-7b-instruct"
+    static_models:
+      - id: "qwen2.5-7b-instruct"
+        modalities: ["text"]
+  gemini_cli:
+    kind: cli
+    command: ["gemini", "--model", "auto", "-o", "json", "{prompt}"]
+    format: "text"
+    roles: ["brain", "scout"]
+    tier: "balanced"
+    modes: ["planner", "verifier"]
+    timeout_seconds: 40
+    static_models:
+      - id: "gemini-2.5-flash"
+        modalities: ["text", "vision"]
+      - id: "gemini-2.5-pro"
+        modalities: ["text", "vision"]
+  static_local:
+    kind: "static"
+    models:
+      - id: "qwen/qwen3-vl-4b"
+        modalities: ["vision", "text"]
+      - id: "lfm2-vl-1.6b"
+        modalities: ["vision", "text"]
+    vision_whitelist: ["vl", "vision"]
+  codex_cli:
+    kind: cli
+    command: ["cdx", "models", "--json"]
+    format: "json"
+    env: {}
+    workdir: "."
+    vision_hints: ["vision", "vl"]
+    disabled: true
+    tier: "premium"
+    modes: ["planner", "verifier", "chatter"]
+  codex_brain:
+    kind: codex_cli_jsonl
+    command: ["codex", "exec", "--model", "{model}", "--json"]
+    static_models:
+      - id: "gpt-5.1-codex-max"
+        modalities: ["text", "vision"]
+        notes: "Modelo Brain principal"
+      - id: "gpt-5.1-codex-mini"
+        modalities: ["text", "vision"]
+        notes: "Modelo Brain rápido"
+      - id: "gpt-5.1"
+        modalities: ["text"]
+        notes: "Texto base"
+    default_model: "gpt-5.1-codex-max"
+    roles: ["brain", "council"]
+    tier: "premium"
+    modes: ["planner", "vision", "verifier"]
+    timeout_seconds: 60
+    disabled: true

@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://leann.dev/agency/verifier_report.schema.json",
+  "title": "Verifier Report",
+  "type": "object",
+  "required": ["ok", "failed_checks"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "failed_checks": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "advice": {"type": "string"},
+    "details": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

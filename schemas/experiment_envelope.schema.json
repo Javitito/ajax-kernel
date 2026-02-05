@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Experiment Envelope",
+  "type": "object",
+  "required": ["schema_version", "id", "created_utc", "title", "rail", "kind", "efe_path"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "id": {"type": "string"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "title": {"type": "string"},
+    "rail": {"type": "string", "enum": ["lab", "prod"]},
+    "kind": {"type": "string", "enum": ["experiment", "mission"]},
+    "hypothesis": {"type": "string"},
+    "efe_path": {"type": "string"},
+    "execution_fixture_path": {"type": "string"},
+    "spl": {"type": "string"},
+    "break_glass_path": {"type": "string"},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "inputs": {"type": "object"},
+    "promotion": {"type": "object"}
+  },
+  "additionalProperties": true
+}

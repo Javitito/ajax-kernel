@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "State Delta",
+  "type": "object",
+  "required": ["schema_version", "envelope_id", "created_utc", "verification"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "envelope_id": {"type": "string"},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "verification": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": {"type": "boolean"},
+        "failures": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "observations": {"type": "object"},
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": true
+}

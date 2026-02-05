@@ -1,0 +1,65 @@
+{
+  "policy_version": "0.1-tight",
+  "queue_root": "C:\\Users\\Public\\ajax_admin_queue",
+  "queue_dirs": {
+    "in": "in",
+    "done": "done",
+    "err": "err",
+    "locks": "locks"
+  },
+  "cooldown_state_file": "C:\\Users\\Public\\ajax_admin_queue\\cooldown.json",
+  "break_glass": {
+    "flag_path": "C:\\Users\\Public\\ajax_admin_queue\\break_glass.flag",
+    "postmortem_path": "C:\\Users\\Public\\ajax_admin_queue\\postmortem.md",
+    "require_postmortem_on_expired": true,
+    "require_for_classes": [
+      "A"
+    ],
+    "require_for_actions": [
+      "driver_restart_allowlisted"
+    ]
+  },
+  "human_active_flags": [
+    "C:\\Users\\Public\\ajax_admin_queue\\human_active.flag"
+  ],
+  "allowed_root_dirs": [
+    "C:\\Users\\AJAX\\AJAX_HOME\\",
+    "C:\\Users\\Public\\"
+  ],
+  "allowed_actions": [
+    "pip_install_allowlisted",
+    "task_start",
+    "task_stop",
+    "task_query",
+    "driver_restart_allowlisted",
+    "status_probe",
+    "file_write_text",
+    "file_append_text",
+    "file_copy",
+    "file_mkdir"
+  ],
+  "allowed_pip_packages": [
+    "comtypes",
+    "pycaw",
+    "psutil",
+    "pywin32",
+    "requests"
+  ],
+  "allowed_venv_pythons": [
+    "C:\\Users\\AJAX\\AJAX_HOME\\.venv_os_driver\\Scripts\\python.exe"
+  ],
+  "allowed_task_path_prefixes": [
+    "\\AJAX\\"
+  ],
+  "allowed_task_names": [
+    "AJAX_Run_Driver",
+    "AJAX_AdminRunner"
+  ],
+  "allowed_driver_process_names": [
+    "python",
+    "pythonw"
+  ],
+  "allowed_driver_owners": [
+    "AJAX"
+  ]
+}

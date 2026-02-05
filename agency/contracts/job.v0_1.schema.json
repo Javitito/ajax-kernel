@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://leann.dev/agency/job.v0_1.schema.json",
+  "title": "Agency Job v0.1",
+  "type": "object",
+  "required": ["id", "goal"],
+  "properties": {
+    "id": {"type": "string"},
+    "goal": {"type": "string"},
+    "context": {
+      "type": "object",
+      "properties": {
+        "rag": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {"type": "string"},
+              "source": {"type": ["string", "null"]}
+            },
+            "required": ["text"],
+            "additionalProperties": true
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": true,
+      "default": {"rag": [], "notes": []}
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "steps": {"type": "integer", "minimum": 0, "default": 6},
+        "seconds": {"type": "integer", "minimum": 0, "default": 120},
+        "tokens": {"type": "integer", "minimum": 0, "default": 20000}
+      },
+      "additionalProperties": false,
+      "default": {"steps": 6, "seconds": 120, "tokens": 20000}
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "safety": {"type": "string", "default": "strict"},
+        "confirm_sensitive": {"type": "boolean", "default": true}
+      },
+      "additionalProperties": true,
+      "default": {"safety": "strict", "confirm_sensitive": true}
+    }
+  },
+  "additionalProperties": true
+}

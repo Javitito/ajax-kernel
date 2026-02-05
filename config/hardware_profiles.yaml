@@ -1,0 +1,13 @@
+profiles:
+  pc_mini_32gb:
+    description: "PC mini de Javier, 32GB RAM, sin GPU dedicada potente."
+    ram_gb: 32
+    has_dedicated_gpu: false
+    max_vlm_params_b: 4
+    preferred_quantization: "Q4_K_M"
+    max_context_tokens: 2048
+    default_temperature: 0.0
+    batch_size: 1
+    notes:
+      - "Usar modelos VL pequeños/medios cuantizados."
+      - "Evitar modelos >7B salvo tests de laboratorio."

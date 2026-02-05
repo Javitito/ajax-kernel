@@ -1,0 +1,16 @@
+{
+  "schema": "ajax.bindings.policy.v1",
+  "defaults": {
+    "bindings_profile_ref": null
+  },
+  "rails": {
+    "lab": {
+      "defaults": {},
+      "intent_classes": {}
+    },
+    "prod": {
+      "defaults": {},
+      "intent_classes": {}
+    }
+  }
+}

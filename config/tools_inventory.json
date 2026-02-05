@@ -1,0 +1,87 @@
+[
+  {
+    "id": "memory.leann_history",
+    "kind": "memory",
+    "requires_subsystems": ["rag_api"],
+    "cost": "medium",
+    "risk": "low",
+    "cooldown": { "seconds": 20 },
+    "max_per_turn": 1,
+    "outputs": ["snippets", "metadata"],
+    "hints": ["history", "repro", "antes", "officebot", "notepad_soberania", "recuerda", "evolución", "resume"],
+    "affordances": [
+      "Recordar reproducciones previas de notepad_soberania",
+      "Listar qué se aprendió de OfficeBot en el último repro",
+      "Resumir evolución de misiones recientes"
+    ],
+    "notes": "Consulta ajax_history_v1 con agency.leann_query_client.query_leann; top_k=3 por defecto."
+  },
+  {
+    "id": "sensing.vision_delta",
+    "kind": "sensing",
+    "requires_subsystems": ["vision", "driver"],
+    "cost": "medium",
+    "risk": "low",
+    "cooldown": { "seconds": 5 },
+    "max_per_turn": 2,
+    "outputs": ["delta_tiles", "ocr", "affordances"],
+    "hints": ["ver", "pantalla", "sigue abierto", "no se si", "estado", "cierra", "captura"],
+    "affordances": [
+      "Detectar si una ventana sigue abierta tras un intento de cierre",
+      "Identificar botones visibles después de un cambio de foco",
+      "Capturar estado parcial sin reescanear toda la pantalla"
+    ],
+    "notes": "Usa vision.delta_tag_screen y skills relacionadas para inspección visual incremental."
+  },
+  {
+    "id": "actuation.driver_uia",
+    "kind": "actuation",
+    "requires_subsystems": ["driver"],
+    "cost": "medium",
+    "risk": "medium",
+    "cooldown": { "seconds": 0 },
+    "max_per_turn": 5,
+    "outputs": ["uia_tree", "actions"],
+    "hints": ["click", "foco", "tecla", "ventana", "uia", "inspección"],
+    "affordances": [
+      "Enviar hotkeys seguros a la ventana activa",
+      "Cambiar foco entre ventanas conocidas",
+      "Leer jerarquía UIA para decidir siguiente acción"
+    ],
+    "notes": "Acciones de escritorio vía driver UIA (window.focus, keyboard.type, ui.inspect...)."
+  },
+  {
+    "id": "infra.heartbeat",
+    "kind": "infra",
+    "requires_subsystems": [],
+    "cost": "low",
+    "risk": "low",
+    "cooldown": { "seconds": 30 },
+    "max_per_turn": 1,
+    "outputs": ["heartbeat_snapshot"],
+    "hints": ["salud", "estado", "health", "diagnóstico", "heartbeat"],
+    "affordances": [
+      "Comprobar si driver o RAG están verdes antes de actuar",
+      "Registrar problemas recientes de subsistemas",
+      "Resetear dudas de estado consultando snapshot local"
+    ],
+    "notes": "Lee artifacts/health/ajax_heartbeat.json o ejecuta agency/ajax_heartbeat.py."
+  },
+  {
+    "id": "governance.council",
+    "kind": "governance",
+    "requires_subsystems": [],
+    "cost": "medium",
+    "risk": "medium",
+    "cooldown": { "seconds": 0 },
+    "max_per_turn": 1,
+    "outputs": ["verdict"],
+    "hints": ["council", "seguridad", "revisión", "veto"],
+    "affordances": [
+      "Filtrar planes inseguros cuando falta memoria requerida",
+      "Bajar a modo degradado si proveedores no responden",
+      "Pedir aclaración antes de ejecutar acciones ambiguas"
+    ],
+    "notes": "Consejo de seguridad; policy/enforcement. No es una tool de usuario directo."
+  }
+]

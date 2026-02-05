@@ -1,0 +1,27 @@
+profiles:
+  pc_mini_32gb:
+    pipeline:
+      - kind: ocr
+      - kind: vl_local
+      - kind: vl_remote
+    vl_local:
+      default_model: "qwen2.5-vl-3b-instruct"
+      runner: "ollama"
+      quantization: "Q4_K_M"
+      n_ctx: 2048
+      temperature: 0.0
+      batch_size: 1
+      timeout_seconds: 25
+      notes:
+        - "Usar en capturas recortadas; grounding de UI."
+        - "Evitar modelos >4B en este hardware."
+    vl_local_alternatives:
+      - id: "florence-2-small"
+        notes: "Zero-shot UI grounding muy fuerte; usar si Qwen no está."
+      - id: "smolvlm-500m"
+        notes: "Ultra rápido para tests simples."
+    vl_remote:
+      default_provider: "gemini_http"
+      timeout_seconds: 20
+      notes:
+        - "Solo para casos donde VL local no baste."

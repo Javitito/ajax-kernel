@@ -1,0 +1,7 @@
+{
+  "asr_mode": "text_fallback",
+  "tts_mode": "text_fallback",
+  "language": "es-ES",
+  "exit_words": ["salir", "exit", "termina sesión"],
+  "input_prompt": "🎤 Di algo (o 'salir' para terminar): "
+}
