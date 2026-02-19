@@ -72,6 +72,11 @@ SESIÓN ÚNICA (usuario real)
 [RECEIPT] evidencia durable → LEANN
 ```
 
+### Preflight estricto (nuevo wiring demo-ready)
+Antes de `Starting XI` el runtime aplica dos gates fail-closed:
+1) `PolicyContractGate`: exige `config/provider_policy.yaml` y `config/provider_failure_policy.yaml`; si faltan o son inválidos => `BLOCKED` con receipt.
+2) `PhysicalAnchorGate`: valida `rail + session + port + display`; mismatch => `BLOCKED` con receipt.
+
 **Irreversibles:** dinero, borrados destructivos, envíos, cambios de credenciales/seguridad → **WAITING_FOR_USER** o **COUNCIL** por defecto.
 
 ---
