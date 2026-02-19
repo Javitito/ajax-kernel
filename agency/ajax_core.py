@@ -304,6 +304,14 @@ try:
     from agency import provider_ranker
 except ImportError:  # pragma: no cover
     provider_ranker = None  # type: ignore
+try:
+    from agency.policy_contract import validate_policy_contract
+except ImportError:  # pragma: no cover
+    validate_policy_contract = None  # type: ignore
+try:
+    from agency.anchor_preflight import run_anchor_preflight
+except ImportError:  # pragma: no cover
+    run_anchor_preflight = None  # type: ignore
 
 try:
     import yaml  # type: ignore
@@ -13462,6 +13470,93 @@ class AjaxCore:
         Paso 0 (Starting XI): antes de plan/act, verificar providers+inventario y elegir titulares+banquillo por rol.
         Si falta quorum -> soft abort + gap accionable.
         """
+        rail = os.getenv("AJAX_RAIL") or os.getenv("AJAX_ENV") or os.getenv("AJAX_MODE") or "lab"
+        if validate_policy_contract is None:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_POLICY_CONTRACT_UNAVAILABLE",
+                path="preflight",
+                detail={
+                    "reason": "policy_contract_validator_unavailable",
+                    "terminal_status": "BLOCKED",
+                },
+            )
+            return None, res
+        try:
+            policy_contract = validate_policy_contract(
+                self.config.root_dir,
+                sync_json=True,
+                write_receipt=True,
+            )
+        except Exception as exc:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_POLICY_CONTRACT_FAILED",
+                path="preflight",
+                detail={
+                    "reason": "policy_contract_exception",
+                    "error": str(exc)[:200],
+                    "terminal_status": "BLOCKED",
+                },
+            )
+            return None, res
+        if isinstance(mission.notes, dict):
+            mission.notes["policy_contract"] = policy_contract.to_dict()
+        if not policy_contract.ok:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_POLICY_CONFIG_MISSING",
+                path="preflight",
+                detail={
+                    "reason": policy_contract.reason,
+                    "policy_contract": policy_contract.to_dict(),
+                    "terminal_status": "BLOCKED",
+                },
+                artifacts={"policy_contract_receipt": policy_contract.receipt_path}
+                if policy_contract.receipt_path
+                else None,
+            )
+            return None, res
+        if run_anchor_preflight is None:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_ANCHOR_GATE_UNAVAILABLE",
+                path="preflight",
+                detail={
+                    "reason": "anchor_preflight_unavailable",
+                    "terminal_status": "BLOCKED",
+                },
+            )
+            return None, res
+        try:
+            anchor_gate = run_anchor_preflight(
+                root_dir=self.config.root_dir,
+                rail=rail,
+                write_receipt=True,
+            )
+        except Exception as exc:
+            anchor_gate = {
+                "ok": False,
+                "status": "BLOCKED",
+                "reason": f"anchor_preflight_exception:{str(exc)[:120]}",
+            }
+        if isinstance(mission.notes, dict):
+            mission.notes["anchor_preflight"] = anchor_gate
+        if not bool(anchor_gate.get("ok")):
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_ANCHOR_MISMATCH",
+                path="preflight",
+                detail={
+                    "reason": anchor_gate.get("reason") or "anchor_mismatch",
+                    "anchor_preflight": anchor_gate,
+                    "terminal_status": "BLOCKED",
+                },
+                artifacts={"anchor_receipt": anchor_gate.get("receipt_path")}
+                if anchor_gate.get("receipt_path")
+                else None,
+            )
+            return None, res
         if build_starting_xi is None:
             res = AjaxExecutionResult(
                 success=False,
@@ -13470,7 +13565,6 @@ class AjaxCore:
                 detail={"reason": "starting_xi_module_missing"},
             )
             return None, res
-        rail = os.getenv("AJAX_RAIL") or os.getenv("AJAX_ENV") or os.getenv("AJAX_MODE") or "lab"
         risk_level = "medium"
         try:
             gov = mission.envelope.governance if mission.envelope else None  # type: ignore[union-attr]
@@ -14143,7 +14237,7 @@ class AjaxCore:
             match step.kind:
                 case "EXECUTE_ACTION":
                     err = self._execute_action_step(mission, step)
-                    if err == _AWAIT_USER_SENTINEL:
+                    if err == _AWAIT_USER_SENTINEL or mission.status == "WAITING_FOR_USER":
                         return mission.last_result or AjaxExecutionResult(
                             success=False, error="await_user_input", path="waiting_for_user"
                         )
@@ -15991,7 +16085,20 @@ class AjaxCore:
                     detail={"reason": "starting_xi_failed", "error": str(exc)[:200]},
                 )
             if preflight_res is not None:
-                mission.status = "BLOCKED_BY_MISSING_PLAYERS"
+                status_override = None
+                try:
+                    if isinstance(preflight_res.detail, dict):
+                        raw_status = preflight_res.detail.get("terminal_status")
+                        if isinstance(raw_status, str) and raw_status.strip():
+                            status_override = raw_status.strip().upper()
+                except Exception:
+                    status_override = None
+                if status_override in TERMINAL_STATES:
+                    mission.status = status_override
+                elif str(preflight_res.error or "").strip().upper().startswith("BLOCKED"):
+                    mission.status = "BLOCKED"
+                else:
+                    mission.status = "BLOCKED_BY_MISSING_PLAYERS"
                 mission.last_result = preflight_res
                 mission.last_mission_error = (
                     MissionError(

@@ -732,6 +732,24 @@ def cmd_health(args: argparse.Namespace) -> int:
     except Exception:
         pass
 
+    try:
+        from agency.health_ttl import provider_status_ttl  # type: ignore
+
+        try:
+            ttl_seconds = int(os.getenv("AJAX_HEALTH_TTL_SEC") or 900)
+        except Exception:
+            ttl_seconds = 900
+        freshness = provider_status_ttl(ROOT, ttl_seconds=ttl_seconds)
+        if isinstance(payload, dict):
+            payload["providers_status_ttl"] = freshness
+            if freshness.get("stale"):
+                payload["ok"] = False
+                payload["stale_health"] = True
+                payload["reason"] = "HEALTH_STALE"
+                payload["recommended_action"] = "run_doctor_providers_or_refresh_status"
+    except Exception:
+        pass
+
     hunger_state = None
     try:
         from agency.hunger import get_current_hunger
@@ -952,27 +970,23 @@ def _load_provider_configs() -> Dict[str, Any]:
 
 
 def _load_provider_policy() -> Dict[str, Any]:
-    policy_yaml_path = ROOT / "config" / "provider_policy.yaml"
-    policy_json_path = ROOT / "config" / "provider_policy.json"
-    data: Any = None
-
-    if policy_yaml_path.exists():
+    try:
+        from agency.policy_contract import validate_policy_contract  # type: ignore
+    except Exception:
+        validate_policy_contract = None  # type: ignore
+    if validate_policy_contract is not None:
         try:
-            import yaml  # type: ignore
+            validate_policy_contract(ROOT, sync_json=True, write_receipt=False)
         except Exception:
-            yaml = None  # type: ignore
-        if yaml is not None:
-            try:
-                data = yaml.safe_load(policy_yaml_path.read_text(encoding="utf-8")) or {}
-            except Exception:
-                data = None
-
-    if data is None and policy_json_path.exists():
-        try:
-            data = json.loads(policy_json_path.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-
+            pass
+    try:
+        from agency.provider_policy import load_provider_policy  # type: ignore
+    except Exception:
+        return {}
+    try:
+        data = load_provider_policy(ROOT)
+    except Exception:
+        data = {}
     return data if isinstance(data, dict) else {}
 
 
@@ -5300,6 +5314,22 @@ $rows | ConvertTo-Json -Depth 5
     return 0
 
 
+def cmd_doctor_anchor(args: argparse.Namespace) -> int:
+    try:
+        from agency.anchor_preflight import run_anchor_preflight  # type: ignore
+    except Exception as exc:
+        print(f"Anchor doctor no disponible: {exc}", file=sys.stderr)
+        return 3
+    rail = str(getattr(args, "rail", None) or _resolve_rail() or "lab").strip().lower()
+    try:
+        payload = run_anchor_preflight(root_dir=ROOT, rail=rail, write_receipt=True)
+    except Exception as exc:
+        print(f"Fallo al ejecutar doctor anchor: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
 def _explain_starting_xi_providers(root_dir: Path, doctor_payload: dict, *, cost_mode: str) -> dict:
     try:
         from agency import starting_xi as starting_xi_mod  # type: ignore
@@ -6735,6 +6765,7 @@ def main(argv=None) -> int:
     p_subcall.set_defaults(func=cmd_subcall)
 
     p_health = sub.add_parser("health", help="Chequea el estado del sistema AJAX.")
+    p_health.add_argument("--json", action="store_true", help="Salida JSON sin resumen extra.")
     p_health.set_defaults(func=cmd_health)
 
     p_cloud_canary = sub.add_parser(
@@ -7139,6 +7170,11 @@ def main(argv=None) -> int:
         "drivers", help="Lista quién está escuchando en 5010/5011."
     )
     p_doctor_drivers.set_defaults(func=cmd_doctor_drivers)
+    p_doctor_anchor = doctor_sub.add_parser(
+        "anchor", help="Valida ancla fisica rail+session+port+display."
+    )
+    p_doctor_anchor.add_argument("--rail", choices=["lab", "prod"], help="Rail objetivo.")
+    p_doctor_anchor.set_defaults(func=cmd_doctor_anchor)
     p_doctor_providers = doctor_sub.add_parser(
         "providers", help="Self-test rápido de proveedores Brain."
     )

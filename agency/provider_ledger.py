@@ -28,6 +28,7 @@ from agency.provider_failure_policy import (
     load_provider_failure_policy,
     quota_exhausted_tokens,
 )
+from agency.provider_policy import load_provider_policy
 
 
 def _now_ts() -> float:
@@ -254,23 +255,11 @@ class ProviderLedger:
         return data if isinstance(data, dict) else {"providers": {}}
 
     def _load_policy(self) -> Dict[str, Any]:
-        data: Any = None
-        path_yaml = self.policy_path
-        path_json = self.root_dir / "config" / "provider_policy.json"
-
-        if yaml is not None and path_yaml.exists():
-            try:
-                data = yaml.safe_load(path_yaml.read_text(encoding="utf-8")) or {}
-            except Exception:
-                data = None
-
-        if data is None and path_json.exists():
-            try:
-                data = json.loads(path_json.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-
-        return data if isinstance(data, dict) else {}
+        try:
+            doc = load_provider_policy(self.root_dir, policy_path=self.policy_path)
+        except Exception:
+            doc = {}
+        return doc if isinstance(doc, dict) else {}
 
     def load_latest(self) -> Dict[str, Any]:
         doc = _safe_read_json(self.ledger_path)
