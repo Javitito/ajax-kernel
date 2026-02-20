@@ -875,16 +875,24 @@ class AjaxCore:
             self._register_driver_failure("health_failed")
             return False
 
-    def _driver_online(self) -> bool:
+    def _driver_health_snapshot(self) -> Dict[str, Any]:
         if not self.driver:
-            return False
+            return {"ok": False, "simulated": False}
         try:
             res = self.driver.health()
             if isinstance(res, dict):
-                return bool(res.get("ok", False))
-            return True
+                return dict(res)
+            return {"ok": True, "simulated": False}
         except Exception:
-            return False
+            return {"ok": False, "simulated": False}
+
+    def _driver_online(self) -> bool:
+        snap = self._driver_health_snapshot()
+        return bool(snap.get("ok", False))
+
+    def _driver_simulated(self) -> bool:
+        snap = self._driver_health_snapshot()
+        return bool(snap.get("simulated"))
 
     def _build_plan_from_habit(self, habit: "habits.Habit") -> Dict[str, Any]:
         return {
@@ -12373,12 +12381,17 @@ class AjaxCore:
             verification["driver_online"] = bool(
                 (context or {}).get("driver_online", self._driver_online())
             )
+        if "driver_simulated" not in verification:
+            verification["driver_simulated"] = bool(
+                (context or {}).get("driver_simulated", self._driver_simulated())
+            )
 
         if microfilm_enforce_evidence_tiers is not None:
             try:
                 verification = microfilm_enforce_evidence_tiers(
                     {
                         "driver_online": verification.get("driver_online"),
+                        "driver_simulated": verification.get("driver_simulated"),
                         "verification_mode": verification_mode,
                     },
                     verification,
@@ -15473,6 +15486,7 @@ class AjaxCore:
             result,
             context={
                 "driver_online": self._driver_online(),
+                "driver_simulated": self._driver_simulated(),
                 "verification_mode": (
                     "real" if mission.mode != "dry" and result.path == "plan_runner" else "synthetic"
                 ),

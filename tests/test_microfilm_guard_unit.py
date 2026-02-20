@@ -98,6 +98,15 @@ def test_evidence_tier_rejects_offline_promotion() -> None:
     assert out["promote_trust"] is False
 
 
+def test_evidence_tier_simulated_driver_never_promotes_trust() -> None:
+    out = enforce_evidence_tiers(
+        {"driver_online": True, "driver_simulated": True},
+        {"ok": True, "verification_mode": "real"},
+    )
+    assert out["promote_trust"] is False
+    assert out["evidence_tier"] == "simulated_driver"
+
+
 def test_undo_guard_blocks_reversible_without_undo() -> None:
     out = enforce_undo_for_reversible({"steps": [{"action": "app.launch"}], "metadata": {}})
     assert out["ok"] is False

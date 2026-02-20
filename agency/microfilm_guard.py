@@ -223,10 +223,18 @@ def enforce_evidence_tiers(ctx: Any, verification: Any) -> Dict[str, Any]:
         if "driver_online" in out
         else context.get("driver_online")
     )
+    driver_simulated = bool(
+        out.get("driver_simulated")
+        if "driver_simulated" in out
+        else context.get("driver_simulated")
+    )
 
-    if ok and mode == "real" and driver_online:
+    if ok and mode == "real" and driver_online and not driver_simulated:
         evidence_tier = "real_online"
         promote_trust = True
+    elif ok and driver_simulated:
+        evidence_tier = "simulated_driver"
+        promote_trust = False
     elif ok:
         evidence_tier = "synthetic_or_offline"
         promote_trust = False
@@ -236,10 +244,13 @@ def enforce_evidence_tiers(ctx: Any, verification: Any) -> Dict[str, Any]:
 
     out["verification_mode"] = mode
     out["driver_online"] = driver_online
+    out["driver_simulated"] = driver_simulated
     out["evidence_tier"] = evidence_tier
     out["promote_trust"] = bool(promote_trust)
     if ok and not promote_trust:
-        if mode != "real":
+        if driver_simulated:
+            out["actionable_hint"] = "Driver is simulated; trust promotion is intentionally disabled."
+        elif mode != "real":
             out["actionable_hint"] = "Use verification_mode=real to enable trust promotion."
         elif not driver_online:
             out["actionable_hint"] = "Bring the driver online before trust promotion."
