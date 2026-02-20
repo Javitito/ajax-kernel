@@ -5451,8 +5451,12 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
             "ok": bool(anchor_payload.get("ok")),
             "code": "ANCHOR_OK" if bool(anchor_payload.get("ok")) else "BLOCKED_RAIL_MISMATCH",
             "actionable_hint": (
-                anchor_payload.get("reason")
-                or "Run `python bin/ajaxctl doctor anchor --rail <lab|prod>` and fix mismatches."
+                ""
+                if bool(anchor_payload.get("ok"))
+                else (
+                    anchor_payload.get("reason")
+                    or "Run `python bin/ajaxctl doctor anchor --rail <lab|prod>` and fix mismatches."
+                )
             ),
             "receipt_path": anchor_payload.get("receipt_path"),
             "detail": anchor_payload,
