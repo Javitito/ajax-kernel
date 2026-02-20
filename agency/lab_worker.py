@@ -746,10 +746,8 @@ class LabWorker:
                 updated_ts = float(updated_at) if updated_at is not None else float(time.time())
             except Exception:
                 updated_ts = float(time.time())
-            if status_doc.get("updated_ts") is None:
-                status_doc["updated_ts"] = updated_ts
-            if not status_doc.get("updated_utc"):
-                status_doc["updated_utc"] = _utc_now()
+            status_doc["updated_ts"] = updated_ts
+            status_doc["updated_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(updated_ts))
             meta = status_doc.get("meta") if isinstance(status_doc.get("meta"), dict) else {}
             meta["last_refresh_source"] = "lab_worker.providers_probe"
             meta["last_refresh_reason"] = "provider_breathing_run_once"

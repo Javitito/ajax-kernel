@@ -31,6 +31,7 @@ def test_providers_probe_refreshes_providers_status_timestamp(
             return {
                 "schema": "ajax.providers_status.v1",
                 "updated_at": 2000.0,
+                "updated_ts": 1000.0,
                 "updated_utc": "1970-01-01T00:33:20Z",
                 "providers": {
                     "stub": {
@@ -75,3 +76,4 @@ def test_providers_probe_refreshes_providers_status_timestamp(
     refreshed = json.loads(status_path.read_text(encoding="utf-8"))
     assert refreshed.get("updated_utc") != old_doc["updated_utc"]
     assert float(refreshed.get("updated_ts") or 0.0) > float(old_doc["updated_ts"])
+    assert float(refreshed.get("updated_ts") or 0.0) == 2000.0
