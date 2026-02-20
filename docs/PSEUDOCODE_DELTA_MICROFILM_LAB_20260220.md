@@ -78,3 +78,24 @@ microfilm check:
 
   overall_ok = all(check.ok)
 ```
+
+## 6) Providers refresh ownership for Soak ALIVE
+
+```text
+providers_probe(job):
+  status = refresh_providers_status()
+    - preferred: ProviderBreathingLoop.run_once() -> artifacts/health/providers_status.json
+    - fallback (fail-closed/no-stale): touch providers_status.json updated_ts/updated_utc + meta.last_refresh_*
+  ledger = ProviderLedger.refresh()
+  outcome = PASS unless ledger refresh fails
+  evidence_refs MUST include:
+    - artifacts/health/providers_status.json
+    - artifacts/provider_ledger/latest.json
+
+soak_gate(ALIVE):
+  if providers_status TTL stale:
+    code = ALIVE_PROVIDER_STALE
+    detail.last_refresh_age_s = provider_ttl.age_seconds
+    detail.refresh_owner = "lab_worker.providers_probe"
+    actionable_hint = run lab worker once
+```
