@@ -154,6 +154,12 @@ def test_soak_alive_fails_when_provider_stale(monkeypatch, tmp_path: Path) -> No
     out = soak_gate.run_soak_check(root, rail="lab", window_min=60, now_ts=now)
     assert out["ok"] is False
     assert out["signals"]["alive"]["code"] == "ALIVE_PROVIDER_STALE"
+    alive_detail = out["signals"]["alive"]["detail"]
+    assert alive_detail.get("refresh_owner") == "lab_worker.providers_probe"
+    assert alive_detail.get("last_refresh_age_s") == alive_detail["provider_ttl"].get("age_seconds")
+    report = Path(out["report_path"]).read_text(encoding="utf-8")
+    assert "last_refresh_age_s" in report
+    assert "refresh_owner" in report
 
 
 def test_soak_alive_fails_when_worker_down(monkeypatch, tmp_path: Path) -> None:

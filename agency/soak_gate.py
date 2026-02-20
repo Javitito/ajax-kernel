@@ -400,6 +400,9 @@ def _render_report(payload: Dict[str, Any]) -> str:
     alive = signals.get("alive") if isinstance(signals.get("alive"), dict) else {}
     effective = signals.get("effective") if isinstance(signals.get("effective"), dict) else {}
     safe = signals.get("safe") if isinstance(signals.get("safe"), dict) else {}
+    alive_detail = alive.get("detail") if isinstance(alive.get("detail"), dict) else {}
+    stale_age = alive_detail.get("last_refresh_age_s")
+    stale_owner = alive_detail.get("refresh_owner")
     lines = [
         "# Soak Status",
         "",
@@ -433,13 +436,27 @@ def _render_report(payload: Dict[str, Any]) -> str:
             hint=str(safe.get("actionable_hint") or "-").replace("|", "/"),
         ),
         "",
+    ]
+    if str(alive.get("code") or "") == "ALIVE_PROVIDER_STALE":
+        lines.extend(
+            [
+                "## Provider Refresh",
+                "",
+                f"- last_refresh_age_s: {stale_age if stale_age is not None else 'unknown'}",
+                f"- refresh_owner: {stale_owner or 'lab_worker.providers_probe'}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
         "## Raw",
         "",
         "```json",
         json.dumps(payload, ensure_ascii=False, indent=2),
         "```",
         "",
-    ]
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -537,11 +554,17 @@ def run_soak_check(
             "detail": {"provider_ttl": provider_ttl, "worker_scheduler": worker_signal},
         }
     elif not provider_ok:
+        refresh_age = provider_ttl.get("age_seconds")
         alive_signal = {
             "ok": False,
             "code": "ALIVE_PROVIDER_STALE",
-            "actionable_hint": "Run: python bin/ajaxctl doctor providers",
-            "detail": {"provider_ttl": provider_ttl, "worker_scheduler": worker_signal},
+            "actionable_hint": "Run: python -m agency.lab_worker --root . --once (owner: lab_worker.providers_probe)",
+            "detail": {
+                "provider_ttl": provider_ttl,
+                "worker_scheduler": worker_signal,
+                "last_refresh_age_s": refresh_age,
+                "refresh_owner": "lab_worker.providers_probe",
+            },
         }
     else:
         alive_signal = {

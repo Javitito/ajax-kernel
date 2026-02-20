@@ -7,3 +7,10 @@ micro_challenges:
     cadence_s: 300
     budget_s: 20
     tags: [safe, health]
+  - id: providers_probe
+    job_kind: providers_probe
+    enabled: true
+    ui_intrusive: false
+    cadence_s: 300
+    budget_s: 20
+    tags: [safe, providers]
