@@ -498,18 +498,27 @@ def _lab_worker_status(root: Path) -> Dict[str, Any]:
 
 
 def _detect_repo_root(root_override: Optional[str] = None) -> Path:
+    def _has_repo_markers(path: Path) -> bool:
+        markers = [
+            path / "AGENTS.md",
+            path / "bin" / "ajaxctl",
+            path / "agency",
+        ]
+        return all(marker.exists() for marker in markers)
+
     if root_override:
         candidate = Path(root_override).expanduser().resolve()
     else:
         candidate = ROOT
-    markers = [
-        candidate / "AGENTS.md",
-        candidate / "bin" / "ajaxctl",
-        candidate / "agency",
-    ]
-    if not all(marker.exists() for marker in markers):
-        raise RuntimeError("repo_root no detectado; ejecuta desde AJAX_HOME o pasa --root")
-    return candidate
+
+    kernel_candidate = candidate / "ajax-kernel"
+    if _has_repo_markers(candidate):
+        if candidate.name != "ajax-kernel" and _has_repo_markers(kernel_candidate):
+            return kernel_candidate
+        return candidate
+    if _has_repo_markers(kernel_candidate):
+        return kernel_candidate
+    raise RuntimeError("repo_root no detectado; ejecuta desde AJAX_HOME o pasa --root")
 
 
 def _whereami_env_value(key: str) -> str:
@@ -5408,6 +5417,10 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
     try:
         from agency.anchor_preflight import run_anchor_preflight  # type: ignore
         from agency.health_ttl import provider_status_ttl  # type: ignore
+        try:
+            from agency.lab_dummy_driver import is_dummy_driver_simulated  # type: ignore
+        except Exception:
+            is_dummy_driver_simulated = None  # type: ignore
         from agency.microfilm_guard import (  # type: ignore
             enforce_ssc,
             enforce_verify_before_done,
@@ -5468,26 +5481,69 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
     )
 
     snapshot0 = _latest_snapshot0_payload(root_dir)
-    ssc_gate = enforce_ssc({"actuation": True, "snapshot0": snapshot0})
+    undo_path = _latest_undo_plan_path(root_dir)
+    actuation_context = bool(isinstance(snapshot0, dict) and snapshot0) or bool(undo_path)
+
+    ssc_gate = enforce_ssc({"actuation": actuation_context, "snapshot0": snapshot0})
+    if not actuation_context and bool(ssc_gate.get("ok")):
+        ssc_gate["code"] = "SSC_NOT_APPLICABLE"
+        ssc_gate["actionable_hint"] = ""
     checks.append({"name": "ssc", **ssc_gate})
+
+    anchor_mismatches: list[dict[str, str]] = []
+    for bucket in ("mismatches", "warnings"):
+        raw = anchor_payload.get(bucket)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "").strip()
+            if code:
+                anchor_mismatches.append({"code": code})
 
     display_target = (
         str(os.getenv("AJAX_DISPLAY_TARGET") or "").strip().lower()
         or ("dummy" if rail == "lab" else "primary")
     )
+    observed = anchor_payload.get("observed") if isinstance(anchor_payload, dict) else {}
+    if rail == "lab" and isinstance(observed, dict) and bool(observed.get("display_target_is_dummy")):
+        display_target = "dummy"
     separation_gate = enforce_lab_prod_separation(
         {
             "rail": rail,
             "display_target": display_target,
             "human_active": _read_human_active_flag(root_dir),
             "require_display_target": True,
+            "anchor_mismatches": anchor_mismatches,
         }
     )
     checks.append({"name": "lab_prod_separation", **separation_gate})
 
+    driver_simulated = False
+    if is_dummy_driver_simulated is not None:
+        try:
+            driver_simulated = bool(
+                is_dummy_driver_simulated(
+                    root_dir,
+                    port=5012 if rail == "lab" else 5010,
+                    host="127.0.0.1",
+                )
+            )
+        except Exception:
+            driver_simulated = False
+
     evidence = enforce_evidence_tiers(
-        {"driver_online": bool(anchor_payload.get("ok")), "verification_mode": "real"},
-        {"ok": bool(anchor_payload.get("ok")), "verification_mode": "real"},
+        {
+            "driver_online": bool(anchor_payload.get("ok")),
+            "driver_simulated": driver_simulated,
+            "verification_mode": "real",
+        },
+        {
+            "ok": bool(anchor_payload.get("ok")),
+            "verification_mode": "real",
+            "driver_simulated": driver_simulated,
+        },
     )
     checks.append(
         {
@@ -5499,19 +5555,34 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
         }
     )
 
-    verify_gate = enforce_verify_before_done({"status": "DONE"}, evidence)
+    if actuation_context:
+        verify_gate = enforce_verify_before_done({"status": "DONE"}, evidence)
+    else:
+        verify_gate = {
+            "ok": True,
+            "status": "READY",
+            "code": "VERIFY_NOT_APPLICABLE",
+            "actionable_hint": "",
+        }
     checks.append({"name": "verify_before_done", **verify_gate})
 
-    undo_path = _latest_undo_plan_path(root_dir)
-    undo_gate = enforce_undo_for_reversible(
-        {
-            "steps": [{"action": "app.launch"}],
-            "metadata": {
-                "has_reversible_actions": True,
-                "tx_paths": {"undo_plan_path": undo_path},
-            },
+    if actuation_context:
+        undo_gate = enforce_undo_for_reversible(
+            {
+                "steps": [{"action": "app.launch"}],
+                "metadata": {
+                    "has_reversible_actions": True,
+                    "tx_paths": {"undo_plan_path": undo_path},
+                },
+            }
+        )
+    else:
+        undo_gate = {
+            "ok": True,
+            "status": "READY",
+            "code": "UNDO_NOT_APPLICABLE",
+            "actionable_hint": "",
         }
-    )
     checks.append({"name": "undo_guard", **undo_gate})
 
     overall_ok = all(bool(c.get("ok")) for c in checks)
@@ -6223,8 +6294,17 @@ def cmd_lab_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_lab_start(args: argparse.Namespace) -> int:
-    _hb_path, pid_path, _info_path = _lab_worker_paths(ROOT)
+def _run_lab_start(
+    root_dir: Path,
+    *,
+    driver_url: Optional[str] = None,
+    worker_id: Optional[str] = None,
+) -> int:
+    _hb_path, pid_path, _info_path = _lab_worker_paths(root_dir)
+    try:
+        from agency.lab_dummy_driver import ensure_dummy_driver  # type: ignore
+    except Exception:
+        ensure_dummy_driver = None  # type: ignore
     if pid_path.exists():
         try:
             pid = int(pid_path.read_text(encoding="utf-8").strip())
@@ -6237,22 +6317,60 @@ def cmd_lab_start(args: argparse.Namespace) -> int:
             pid_path.unlink()
         except Exception:
             pass
+    dummy_info = None
+    if ensure_dummy_driver is not None:
+        try:
+            dummy_info = ensure_dummy_driver(root_dir, host="127.0.0.1", port=5012)
+        except Exception as exc:
+            dummy_info = {"ok": False, "error": str(exc)[:200], "simulated": True}
+        if isinstance(dummy_info, dict) and not bool(dummy_info.get("ok")):
+            print(
+                f"No se pudo levantar dummy driver LAB en 5012: {dummy_info.get('error') or 'unknown'}",
+                file=sys.stderr,
+            )
+            return 2
+        if isinstance(dummy_info, dict) and bool(dummy_info.get("started")):
+            print("Dummy driver LAB iniciado en 5012 (simulated=true).")
+
     cmd = [
         sys.executable,
         "-m",
         "agency.lab_worker",
         "--root",
-        str(ROOT),
+        str(root_dir),
         "--daemon",
         "--pidfile",
         str(pid_path),
     ]
-    if getattr(args, "driver_url", None):
-        cmd.extend(["--driver-url", str(args.driver_url)])
-    if getattr(args, "worker_id", None):
-        cmd.extend(["--worker-id", str(args.worker_id)])
-    proc = subprocess.run(cmd, cwd=ROOT, text=True)
-    return proc.returncode
+    if driver_url:
+        cmd.extend(["--driver-url", str(driver_url)])
+    if worker_id:
+        cmd.extend(["--worker-id", str(worker_id)])
+    proc = subprocess.run(cmd, cwd=root_dir, text=True)
+    if proc.returncode == 0:
+        try:
+            LabStateStore(root_dir).resume_lab_org(
+                "lab_start",
+                metadata={"source": "ajaxctl"},
+            )
+        except Exception:
+            pass
+    return int(proc.returncode)
+
+
+def cmd_lab_start(args: argparse.Namespace) -> int:
+    root_dir = ROOT
+    try:
+        if getattr(args, "root", None):
+            root_dir = _detect_repo_root(getattr(args, "root", None))
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return _run_lab_start(
+        root_dir,
+        driver_url=getattr(args, "driver_url", None),
+        worker_id=getattr(args, "worker_id", None),
+    )
 
 
 def cmd_lab_stop(args: argparse.Namespace) -> int:
@@ -6934,7 +7052,17 @@ def cmd_lab_init(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"LAB init falló: {exc}", file=sys.stderr)
         return 2
+    start_rc = None
+    if bool(getattr(args, "start", False)):
+        start_rc = _run_lab_start(
+            root_dir,
+            driver_url=getattr(args, "driver_url", None),
+            worker_id=getattr(args, "worker_id", None),
+        )
+        payload["lab_start_rc"] = int(start_rc)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if start_rc is not None and int(start_rc) != 0:
+        return 2
     return 0 if bool(payload.get("ok")) else 2
 
 
@@ -7256,8 +7384,12 @@ def main(argv=None) -> int:
     lab_sub = p_lab.add_subparsers(dest="lab_cmd", required=True)
     p_lab_init = lab_sub.add_parser("init", help="Bootstrap seguro de LAB (idempotente).")
     p_lab_init.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
+    p_lab_init.add_argument("--start", action="store_true", help="Arranca LAB worker al finalizar.")
+    p_lab_init.add_argument("--driver-url", help="Override URL del driver LAB al arrancar.")
+    p_lab_init.add_argument("--worker-id", help="Override ID del worker al arrancar.")
     p_lab_init.set_defaults(func=cmd_lab_init)
     p_lab_start = lab_sub.add_parser("start", help="Arranca el LAB worker.")
+    p_lab_start.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
     p_lab_start.add_argument("--driver-url", help="Override URL del driver LAB.")
     p_lab_start.add_argument("--worker-id", help="Override ID del worker.")
     p_lab_start.set_defaults(func=cmd_lab_start)

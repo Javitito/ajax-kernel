@@ -1,0 +1,9 @@
+schema: ajax.lab_org_manifest.v1
+micro_challenges:
+  - id: capabilities_refresh
+    job_kind: capabilities_refresh
+    enabled: true
+    ui_intrusive: false
+    cadence_s: 300
+    budget_s: 20
+    tags: [safe, health]

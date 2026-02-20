@@ -64,3 +64,24 @@ def test_ajaxctl_lab_init_creates_minimum_files(tmp_path: Path):
     display_map = json.loads((fake_root / "config" / "display_map.json").read_text(encoding="utf-8"))
     assert isinstance(display_map.get("display_targets"), dict)
     assert display_map["display_targets"].get("lab") is not None
+
+
+def test_ajaxctl_lab_init_accepts_parent_root_with_ajax_kernel_child(tmp_path: Path):
+    legacy_root = tmp_path / "AJAX_HOME"
+    fake_root = legacy_root / "ajax-kernel"
+    (fake_root / "agency").mkdir(parents=True, exist_ok=True)
+    (fake_root / "bin").mkdir(parents=True, exist_ok=True)
+    (fake_root / "config").mkdir(parents=True, exist_ok=True)
+    (fake_root / "scripts" / "ops").mkdir(parents=True, exist_ok=True)
+    (fake_root / "AGENTS.md").write_text("# test\n", encoding="utf-8")
+    (fake_root / "bin" / "ajaxctl").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "lab", "init", "--root", str(legacy_root)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload.get("ok") is True
+    assert payload.get("root") == str(fake_root.resolve())
