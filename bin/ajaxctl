@@ -5330,6 +5330,217 @@ def cmd_doctor_anchor(args: argparse.Namespace) -> int:
     return 0 if bool(payload.get("ok")) else 2
 
 
+def _latest_file(paths: list[Path]) -> Optional[Path]:
+    existing = [p for p in paths if p.exists()]
+    if not existing:
+        return None
+    existing.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return existing[0]
+
+
+def _latest_snapshot0_payload(root_dir: Path) -> Optional[Dict[str, Any]]:
+    snap_dir = root_dir / "artifacts" / "missions" / "snapshots"
+    latest = _latest_file(list(snap_dir.glob("*_snapshot0.json")))
+    if latest is None:
+        return None
+    data = _read_json(latest)
+    return data if isinstance(data, dict) else None
+
+
+def _latest_undo_plan_path(root_dir: Path) -> Optional[str]:
+    tx_dir = root_dir / "artifacts" / "missions" / "transactions"
+    latest = _latest_file(list(tx_dir.glob("**/undo_attempt*.json")))
+    if latest is None:
+        return None
+    return str(latest)
+
+
+def _write_microfilm_report(root_dir: Path, payload: Dict[str, Any]) -> Path:
+    report_dir = root_dir / "artifacts" / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / "microfilm_compliance.md"
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    lines = [
+        "# Microfilm Compliance v1",
+        "",
+        f"- generated_at: {payload.get('ts_utc')}",
+        f"- rail: {payload.get('rail')}",
+        f"- result: {'PASS' if payload.get('overall_ok') else 'FAIL'}",
+        f"- actionable_hint: {payload.get('actionable_hint') or 'none'}",
+        "",
+        "## Checks",
+        "",
+        "| check | status | code | hint |",
+        "|---|---|---|---|",
+    ]
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        status = "PASS" if check.get("ok") else "FAIL"
+        lines.append(
+            "| {name} | {status} | {code} | {hint} |".format(
+                name=str(check.get("name") or "-"),
+                status=status,
+                code=str(check.get("code") or "-"),
+                hint=str(check.get("actionable_hint") or "-").replace("|", "/"),
+            )
+        )
+    lines.extend(["", "## Raw", "", "```json", json.dumps(payload, ensure_ascii=False, indent=2), "```", ""])
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return report_path
+
+
+def cmd_microfilm_check(args: argparse.Namespace) -> int:
+    try:
+        root_dir = _detect_repo_root(getattr(args, "root", None))
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    rail = str(getattr(args, "rail", None) or _resolve_rail() or "lab").strip().lower()
+    if rail not in {"lab", "prod"}:
+        rail = "lab"
+    try:
+        from agency.anchor_preflight import run_anchor_preflight  # type: ignore
+        from agency.health_ttl import provider_status_ttl  # type: ignore
+        from agency.microfilm_guard import (  # type: ignore
+            enforce_ssc,
+            enforce_verify_before_done,
+            enforce_lab_prod_separation,
+            enforce_evidence_tiers,
+            enforce_undo_for_reversible,
+        )
+    except Exception as exc:
+        print(f"Microfilm guard unavailable: {exc}", file=sys.stderr)
+        return 3
+
+    ts_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    checks: list[Dict[str, Any]] = []
+
+    anchor_payload: Dict[str, Any]
+    try:
+        anchor_payload = run_anchor_preflight(root_dir=root_dir, rail=rail, write_receipt=True)
+    except Exception as exc:
+        anchor_payload = {
+            "ok": False,
+            "status": "BLOCKED",
+            "code": "anchor_preflight_exception",
+            "reason": str(exc)[:200],
+        }
+    checks.append(
+        {
+            "name": "doctor_anchor",
+            "ok": bool(anchor_payload.get("ok")),
+            "code": "ANCHOR_OK" if bool(anchor_payload.get("ok")) else "BLOCKED_RAIL_MISMATCH",
+            "actionable_hint": (
+                anchor_payload.get("reason")
+                or "Run `python bin/ajaxctl doctor anchor --rail <lab|prod>` and fix mismatches."
+            ),
+            "receipt_path": anchor_payload.get("receipt_path"),
+            "detail": anchor_payload,
+        }
+    )
+
+    try:
+        ttl_seconds = int(os.getenv("AJAX_HEALTH_TTL_SEC") or 900)
+    except Exception:
+        ttl_seconds = 900
+    freshness = provider_status_ttl(root_dir, ttl_seconds=ttl_seconds)
+    checks.append(
+        {
+            "name": "doctor_health_ttl",
+            "ok": not bool(freshness.get("stale")),
+            "code": "HEALTH_TTL_OK"
+            if not bool(freshness.get("stale"))
+            else "BLOCKED_HEALTH_STALE",
+            "actionable_hint": (
+                "Run `python bin/ajaxctl doctor providers` to refresh providers status."
+                if bool(freshness.get("stale"))
+                else ""
+            ),
+            "detail": freshness,
+        }
+    )
+
+    snapshot0 = _latest_snapshot0_payload(root_dir)
+    ssc_gate = enforce_ssc({"actuation": True, "snapshot0": snapshot0})
+    checks.append({"name": "ssc", **ssc_gate})
+
+    display_target = (
+        str(os.getenv("AJAX_DISPLAY_TARGET") or "").strip().lower()
+        or ("dummy" if rail == "lab" else "primary")
+    )
+    separation_gate = enforce_lab_prod_separation(
+        {
+            "rail": rail,
+            "display_target": display_target,
+            "human_active": _read_human_active_flag(root_dir),
+            "require_display_target": True,
+        }
+    )
+    checks.append({"name": "lab_prod_separation", **separation_gate})
+
+    evidence = enforce_evidence_tiers(
+        {"driver_online": bool(anchor_payload.get("ok")), "verification_mode": "real"},
+        {"ok": bool(anchor_payload.get("ok")), "verification_mode": "real"},
+    )
+    checks.append(
+        {
+            "name": "evidence_tier",
+            "ok": bool(evidence.get("ok")),
+            "code": "EVIDENCE_OK" if bool(evidence.get("ok")) else "BLOCKED_EVIDENCE_MISSING",
+            "actionable_hint": evidence.get("actionable_hint"),
+            "detail": evidence,
+        }
+    )
+
+    verify_gate = enforce_verify_before_done({"status": "DONE"}, evidence)
+    checks.append({"name": "verify_before_done", **verify_gate})
+
+    undo_path = _latest_undo_plan_path(root_dir)
+    undo_gate = enforce_undo_for_reversible(
+        {
+            "steps": [{"action": "app.launch"}],
+            "metadata": {
+                "has_reversible_actions": True,
+                "tx_paths": {"undo_plan_path": undo_path},
+            },
+        }
+    )
+    checks.append({"name": "undo_guard", **undo_gate})
+
+    overall_ok = all(bool(c.get("ok")) for c in checks)
+    actionable_hint = next(
+        (
+            str(c.get("actionable_hint") or "").strip()
+            for c in checks
+            if not bool(c.get("ok")) and str(c.get("actionable_hint") or "").strip()
+        ),
+        "No action required.",
+    )
+
+    payload = {
+        "schema": "ajax.microfilm_compliance.v1",
+        "ts_utc": ts_utc,
+        "rail": rail,
+        "overall_ok": overall_ok,
+        "actionable_hint": actionable_hint,
+        "checks": checks,
+    }
+
+    report_path = _write_microfilm_report(root_dir, payload)
+    receipt_dir = root_dir / "artifacts" / "receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = receipt_dir / f"microfilm_check_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json"
+    receipt_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    print(f"Microfilm Compliance v1: {'PASS' if overall_ok else 'FAIL'}")
+    print(f"actionable_hint: {actionable_hint}")
+    print(f"report: {report_path}")
+    print(f"receipt: {receipt_path}")
+    return 0 if overall_ok else 2
+
+
 def _explain_starting_xi_providers(root_dir: Path, doctor_payload: dict, *, cost_mode: str) -> dict:
     try:
         from agency import starting_xi as starting_xi_mod  # type: ignore
@@ -6987,6 +7198,15 @@ def main(argv=None) -> int:
     )
     p_whereami.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
     p_whereami.set_defaults(func=cmd_whereami)
+
+    p_microfilm = sub.add_parser("microfilm", help="Microfilm Compliance v1 checks.")
+    microfilm_sub = p_microfilm.add_subparsers(dest="microfilm_cmd", required=True)
+    p_microfilm_check = microfilm_sub.add_parser(
+        "check", help="Ejecuta doctor mínimo + guards Microfilm fail-closed."
+    )
+    p_microfilm_check.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
+    p_microfilm_check.add_argument("--rail", choices=["lab", "prod"], help="Rail objetivo.")
+    p_microfilm_check.set_defaults(func=cmd_microfilm_check)
 
     p_tools = sub.add_parser("tools", help="Inventario y estado de tools.")
     p_tools_sub = p_tools.add_subparsers(dest="tools_cmd", required=True)
