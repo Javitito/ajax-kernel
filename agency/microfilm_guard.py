@@ -160,6 +160,7 @@ def enforce_lab_prod_separation(ctx: Any) -> Dict[str, Any]:
     human_active = bool(human_value) if human_known else False
 
     mismatches = []
+    warnings = []
     if rail == "lab":
         if display_target == "primary":
             mismatches.append("lab_requires_dummy_display")
@@ -171,6 +172,25 @@ def enforce_lab_prod_separation(ctx: Any) -> Dict[str, Any]:
         if display_target == "dummy":
             mismatches.append("prod_requires_primary_display")
 
+    anchor_codes = []
+    raw_anchor = context.get("anchor_mismatches")
+    if isinstance(raw_anchor, list):
+        for item in raw_anchor:
+            if isinstance(item, dict):
+                code = str(item.get("code") or "").strip()
+            else:
+                code = str(item or "").strip()
+            if code:
+                anchor_codes.append(code)
+    for code in anchor_codes:
+        if code == "expected_session_missing":
+            if rail == "lab" and display_target == "dummy":
+                warnings.append(code)
+            else:
+                mismatches.append(code)
+        elif code:
+            mismatches.append(code)
+
     if mismatches:
         return _blocked(
             "BLOCKED_RAIL_MISMATCH",
@@ -179,12 +199,14 @@ def enforce_lab_prod_separation(ctx: Any) -> Dict[str, Any]:
             display_target=display_target or None,
             human_active=human_value,
             mismatches=mismatches,
+            warnings=warnings or None,
         )
     return _ready(
         code="RAIL_OK",
         rail=rail,
         display_target=display_target or None,
         human_active=human_value,
+        warnings=warnings or None,
     )
 
 

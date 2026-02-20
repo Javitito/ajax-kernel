@@ -57,6 +57,31 @@ def test_lab_prod_separation_passes_lab_dummy_human_inactive() -> None:
     assert out["ok"] is True
 
 
+def test_lab_prod_separation_lab_dummy_ignores_session_missing_anchor_code() -> None:
+    out = enforce_lab_prod_separation(
+        {
+            "rail": "lab",
+            "display_target": "dummy",
+            "human_active": False,
+            "anchor_mismatches": [{"code": "expected_session_missing"}],
+        }
+    )
+    assert out["ok"] is True
+
+
+def test_lab_prod_separation_prod_blocks_session_missing_anchor_code() -> None:
+    out = enforce_lab_prod_separation(
+        {
+            "rail": "prod",
+            "display_target": "primary",
+            "human_active": False,
+            "anchor_mismatches": [{"code": "expected_session_missing"}],
+        }
+    )
+    assert out["ok"] is False
+    assert out["code"] == "BLOCKED_RAIL_MISMATCH"
+
+
 def test_evidence_tier_promotes_only_real_online() -> None:
     out = enforce_evidence_tiers({"driver_online": True}, {"ok": True, "verification_mode": "real"})
     assert out["promote_trust"] is True

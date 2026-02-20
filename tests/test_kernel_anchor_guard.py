@@ -43,6 +43,32 @@ def test_anchor_snapshot_detects_display_target_missing() -> None:
     assert "display_target_missing" in codes
 
 
+def test_anchor_snapshot_lab_dummy_degrades_expected_session_missing_to_warn() -> None:
+    services = _services_ok_for_lab()
+    services["sessions"].pop("AJAX", None)
+    out = evaluate_anchor_snapshot(
+        rail="lab",
+        services_report=services,
+        display_target_id=2,
+        display_catalog={"displays": [{"id": 1, "is_primary": True}, {"id": 2, "is_primary": False}]},
+    )
+    assert out["ok"] is True
+    warn_codes = {item.get("code") for item in out.get("warnings", []) if isinstance(item, dict)}
+    assert "expected_session_missing" in warn_codes
+
+
+def test_anchor_snapshot_prod_keeps_expected_session_missing_blocking() -> None:
+    out = evaluate_anchor_snapshot(
+        rail="prod",
+        services_report={"ok": True, "sessions": {}, "ports": {"5010": {"SessionId": 11}}, "health": {"5010": True}},
+        display_target_id=1,
+        display_catalog={"displays": [{"id": 1, "is_primary": True}]},
+    )
+    assert out["ok"] is False
+    block_codes = {item.get("code") for item in out.get("mismatches", []) if isinstance(item, dict)}
+    assert "expected_session_missing" in block_codes
+
+
 def test_run_anchor_preflight_writes_receipt_with_injected_inputs(tmp_path: Path) -> None:
     services = _services_ok_for_lab()
     display_map = {"display_targets": {"lab": 2, "prod": 1}}

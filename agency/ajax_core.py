@@ -13726,6 +13726,10 @@ class AjaxCore:
                     "display_target": self._resolve_display_target_label(str(rail)),
                     "human_active": self._read_human_active_flag(),
                     "require_display_target": True,
+                    "anchor_mismatches": [
+                        *((anchor_gate.get("mismatches") or []) if isinstance(anchor_gate, dict) else []),
+                        *((anchor_gate.get("warnings") or []) if isinstance(anchor_gate, dict) else []),
+                    ],
                 }
                 rail_gate = microfilm_enforce_lab_prod_separation(microfilm_ctx)
             except Exception as exc:

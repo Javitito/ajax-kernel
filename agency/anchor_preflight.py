@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agency.display_targets import fetch_driver_displays, load_display_map
+try:
+    from agency.lab_bootstrap import ensure_lab_display_target
+except Exception:  # pragma: no cover
+    ensure_lab_display_target = None  # type: ignore
 
 try:
     from agency.ops_ports_sessions import run_services_doctor
@@ -112,6 +116,43 @@ def _display_catalog_ids(display_catalog: Dict[str, Any]) -> List[int]:
     return ids
 
 
+def _display_catalog_entries(display_catalog: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    displays = display_catalog.get("displays") if isinstance(display_catalog, dict) else None
+    if not isinstance(displays, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for entry in displays:
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+def _primary_display_id(entries: List[Dict[str, Any]]) -> Optional[int]:
+    for entry in entries:
+        if not bool(entry.get("is_primary")):
+            continue
+        parsed = _parse_session_id(entry.get("id"))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _target_is_dummy(display_target_id: Optional[int], entries: List[Dict[str, Any]]) -> bool:
+    if display_target_id is None:
+        return False
+    if not entries:
+        return False
+    for entry in entries:
+        parsed = _parse_session_id(entry.get("id"))
+        if parsed is None or parsed != int(display_target_id):
+            continue
+        return not bool(entry.get("is_primary"))
+    primary_id = _primary_display_id(entries)
+    if primary_id is None:
+        return False
+    return int(display_target_id) != int(primary_id)
+
+
 def evaluate_anchor_snapshot(
     *,
     rail: str,
@@ -120,10 +161,24 @@ def evaluate_anchor_snapshot(
     display_catalog: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     expected = _expected_anchor(rail)
+    rail_n = _normalize_rail(rail)
     expected_port = int(expected["expected_port"])
     expected_user = str(expected["expected_user"])
 
     mismatches: List[Dict[str, str]] = []
+    warnings: List[Dict[str, str]] = []
+
+    display_entries = _display_catalog_entries(display_catalog)
+    display_ids: List[int] = _display_catalog_ids(display_catalog or {})
+    lab_dummy_ready = rail_n == "lab" and _target_is_dummy(display_target_id, display_entries)
+
+    def add_mismatch(code: str, detail: str, *, severity: str = "BLOCKED") -> None:
+        entry = {"code": code, "detail": detail, "severity": severity}
+        if severity == "WARN":
+            warnings.append(entry)
+        else:
+            mismatches.append(entry)
+
     sessions = services_report.get("sessions") if isinstance(services_report, dict) else {}
     ports = services_report.get("ports") if isinstance(services_report, dict) else {}
     health = services_report.get("health") if isinstance(services_report, dict) else {}
@@ -132,28 +187,23 @@ def evaluate_anchor_snapshot(
     if isinstance(sessions, dict):
         expected_session = _parse_session_id(sessions.get(expected_user))
     if expected_session is None:
-        mismatches.append(
-            {
-                "code": "expected_session_missing",
-                "detail": f"Session for expected user {expected_user} not found",
-            }
+        add_mismatch(
+            "expected_session_missing",
+            f"Session for expected user {expected_user} not found",
+            severity="WARN" if lab_dummy_ready else "BLOCKED",
         )
 
     port_entry = _extract_port_entry(ports if isinstance(ports, dict) else {}, expected_port)
     actual_session = _parse_session_id(port_entry)
     if not port_entry:
-        mismatches.append(
-            {
-                "code": "expected_port_missing",
-                "detail": f"No listener entry found for port {expected_port}",
-            }
+        add_mismatch(
+            "expected_port_missing",
+            f"No listener entry found for port {expected_port}",
         )
     elif expected_session is not None and actual_session != expected_session:
-        mismatches.append(
-            {
-                "code": "port_session_mismatch",
-                "detail": f"Port {expected_port} session {actual_session} != expected {expected_session}",
-            }
+        add_mismatch(
+            "port_session_mismatch",
+            f"Port {expected_port} session {actual_session} != expected {expected_session}",
         )
 
     port_health = None
@@ -162,46 +212,41 @@ def evaluate_anchor_snapshot(
         if port_health is None:
             port_health = health.get(str(expected_port))
     if bool(port_health) is not True:
-        mismatches.append(
-            {
-                "code": "port_health_not_ok",
-                "detail": f"Health for expected port {expected_port} is not OK",
-            }
+        add_mismatch(
+            "port_health_not_ok",
+            f"Health for expected port {expected_port} is not OK",
         )
 
     if display_target_id is None:
-        mismatches.append(
-            {
-                "code": "display_target_missing",
-                "detail": f"display_targets.{_normalize_rail(rail)} is missing in config/display_map.json",
-            }
+        add_mismatch(
+            "display_target_missing",
+            f"display_targets.{rail_n} is missing in config/display_map.json",
         )
 
-    display_ids: List[int] = []
     if display_catalog is None:
-        mismatches.append(
-            {
-                "code": "display_catalog_unavailable",
-                "detail": "Could not fetch /displays from target rail driver",
-            }
+        add_mismatch(
+            "display_catalog_unavailable",
+            "Could not fetch /displays from target rail driver",
         )
     else:
-        display_ids = _display_catalog_ids(display_catalog)
         if display_target_id is not None and display_ids and display_target_id not in display_ids:
-            mismatches.append(
-                {
-                    "code": "display_target_not_found",
-                    "detail": f"Configured display id {display_target_id} not present in driver displays",
-                }
+            add_mismatch(
+                "display_target_not_found",
+                f"Configured display id {display_target_id} not present in driver displays",
             )
 
     ok = not mismatches
+    status = "READY"
+    if not ok:
+        status = "BLOCKED"
+    elif warnings:
+        status = "READY_WARN"
     return {
         "schema": "ajax.anchor_preflight.v1",
         "ts_utc": _utc_now(),
         "ok": ok,
-        "status": "READY" if ok else "BLOCKED",
-        "rail": _normalize_rail(rail),
+        "status": status,
+        "rail": rail_n,
         "expected": expected,
         "observed": {
             "expected_session": expected_session,
@@ -209,8 +254,10 @@ def evaluate_anchor_snapshot(
             "port_health": bool(port_health),
             "display_target_id": display_target_id,
             "display_catalog_ids": display_ids,
+            "display_target_is_dummy": bool(lab_dummy_ready),
         },
         "mismatches": mismatches,
+        "warnings": warnings,
     }
 
 
@@ -237,7 +284,6 @@ def run_anchor_preflight(
                 services = {"ok": False, "error": f"services_doctor_failed:{str(exc)[:120]}"}
 
     disp_map = display_map if isinstance(display_map, dict) else load_display_map(root)
-    display_target_id = _resolve_display_target_id(disp_map, rail_n)
 
     catalog = display_catalog
     if catalog is None:
@@ -245,6 +291,20 @@ def run_anchor_preflight(
             catalog = fetch_driver_displays(_driver_url_for_rail(rail_n))
         except Exception:
             catalog = None
+
+    display_autofix = None
+    display_target_id = _resolve_display_target_id(disp_map, rail_n)
+    if rail_n == "lab" and display_target_id is None and ensure_lab_display_target is not None:
+        try:
+            display_autofix = ensure_lab_display_target(
+                root,
+                display_catalog=catalog if isinstance(catalog, dict) else None,
+                allow_fetch_catalog=False,
+            )
+            disp_map = load_display_map(root)
+            display_target_id = _resolve_display_target_id(disp_map, rail_n)
+        except Exception:
+            display_autofix = None
 
     payload = evaluate_anchor_snapshot(
         rail=rail_n,
@@ -254,6 +314,8 @@ def run_anchor_preflight(
     )
     payload["services_ok"] = bool(isinstance(services, dict) and services.get("ok", False))
     payload["driver_url"] = _driver_url_for_rail(rail_n)
+    if isinstance(display_autofix, dict):
+        payload["display_map_autofix"] = display_autofix
 
     receipt_path = None
     if write_receipt:
