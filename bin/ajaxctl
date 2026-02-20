@@ -5330,6 +5330,11 @@ def cmd_doctor_anchor(args: argparse.Namespace) -> int:
     return 0 if bool(payload.get("ok")) else 2
 
 
+def cmd_doctor_provider_alias(args: argparse.Namespace) -> int:
+    print("Alias detectado: `doctor provider` -> `doctor providers`.")
+    return cmd_doctor_providers(args)
+
+
 def _latest_file(paths: list[Path]) -> Optional[Path]:
     existing = [p for p in paths if p.exists()]
     if not existing:
@@ -7410,6 +7415,21 @@ def main(argv=None) -> int:
         help="Explica por provider el estado y exclusion del Starting XI (premium).",
     )
     p_doctor_providers.set_defaults(func=cmd_doctor_providers)
+    p_doctor_provider = doctor_sub.add_parser(
+        "provider", help="Alias de `doctor providers` (singular)."
+    )
+    p_doctor_provider.add_argument(
+        "--roles", nargs="*", default=["brain"], help="Roles a probar (default: brain)."
+    )
+    p_doctor_provider.add_argument(
+        "--incident", action="store_true", help="Abrir INCIDENT automatically si hay fallos."
+    )
+    p_doctor_provider.add_argument(
+        "--explain",
+        action="store_true",
+        help="Explica por provider el estado y exclusion del Starting XI (premium).",
+    )
+    p_doctor_provider.set_defaults(func=cmd_doctor_provider_alias)
     p_doctor_bridge = doctor_sub.add_parser(
         "bridge", help="Diagnóstico rápido de bridges CLI (gemini/qwen)."
     )

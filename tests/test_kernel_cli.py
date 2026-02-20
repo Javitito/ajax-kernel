@@ -26,3 +26,14 @@ def test_ajaxctl_microfilm_check_generates_report():
     assert proc.returncode in {0, 2}
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
     assert "Microfilm Compliance v1:" in out
+
+
+def test_ajaxctl_doctor_provider_alias_no_argparse_error():
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "doctor", "provider"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode in {0, 1, 2}
+    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    assert "Alias detectado:" in out
