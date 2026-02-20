@@ -219,6 +219,7 @@ def lab_org_tick(
         "selected_job": None,
         "reason": None,
         "skipped_reason": None,
+        "actionable_hint": None,
         "forced_non_ui_due": False,
         "last_job_ts": dict(last_job_ts),
         "enqueued": False,
@@ -232,6 +233,7 @@ def lab_org_tick(
     try:
         if not store.is_lab_org_running():
             receipt["skipped_reason"] = "lab_org_not_running"
+            receipt["actionable_hint"] = "Run: python bin/ajaxctl lab start"
             return receipt
 
         policy = load_explore_policy(root)

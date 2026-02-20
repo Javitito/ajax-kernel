@@ -6912,6 +6912,32 @@ def cmd_whereami(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lab_init(args: argparse.Namespace) -> int:
+    try:
+        root_dir = _detect_repo_root(getattr(args, "root", None))
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if root_dir.name != "ajax-kernel":
+        print(
+            f"Root no canónico: {root_dir} (se esperaba basename 'ajax-kernel').",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        from agency.lab_bootstrap import ensure_lab_bootstrap  # type: ignore
+    except Exception as exc:
+        print(f"LAB bootstrap no disponible: {exc}", file=sys.stderr)
+        return 3
+    try:
+        payload = ensure_lab_bootstrap(root_dir)
+    except Exception as exc:
+        print(f"LAB init falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="ajaxctl", description="CLI para el núcleo AJAX (AjaxCore)."
@@ -7228,6 +7254,9 @@ def main(argv=None) -> int:
 
     p_lab = sub.add_parser("lab", help="Controles LAB dual (ORG/PROBE).")
     lab_sub = p_lab.add_subparsers(dest="lab_cmd", required=True)
+    p_lab_init = lab_sub.add_parser("init", help="Bootstrap seguro de LAB (idempotente).")
+    p_lab_init.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
+    p_lab_init.set_defaults(func=cmd_lab_init)
     p_lab_start = lab_sub.add_parser("start", help="Arranca el LAB worker.")
     p_lab_start.add_argument("--driver-url", help="Override URL del driver LAB.")
     p_lab_start.add_argument("--worker-id", help="Override ID del worker.")
