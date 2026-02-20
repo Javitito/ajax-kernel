@@ -30,6 +30,17 @@ def test_ajaxctl_microfilm_check_generates_report():
     assert "Microfilm Compliance v1:" in out
 
 
+def test_ajaxctl_soak_check_generates_report():
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "soak", "check", "--root", "."],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode in {0, 2}
+    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    assert "Soak Gate v1:" in out
+
+
 def test_ajaxctl_doctor_provider_alias_no_argparse_error():
     proc = subprocess.run(
         [sys.executable, "bin/ajaxctl", "doctor", "provider"],

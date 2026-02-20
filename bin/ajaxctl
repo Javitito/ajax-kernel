@@ -5621,6 +5621,44 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
     return 0 if overall_ok else 2
 
 
+def cmd_soak_check(args: argparse.Namespace) -> int:
+    rail = str(getattr(args, "rail", None) or _resolve_rail() or "lab").strip().lower()
+    if rail not in {"lab", "prod"}:
+        rail = "lab"
+    try:
+        window_min = int(getattr(args, "window_min", 60) or 60)
+    except Exception:
+        window_min = 60
+    window_min = max(1, window_min)
+
+    requested_root = getattr(args, "root", None)
+    forced_reason = None
+    try:
+        root_dir = _detect_repo_root(requested_root)
+    except RuntimeError as exc:
+        root_dir = ROOT
+        forced_reason = str(exc)
+
+    try:
+        from agency.soak_gate import run_soak_check  # type: ignore
+    except Exception as exc:
+        print(f"Soak gate unavailable: {exc}", file=sys.stderr)
+        return 3
+
+    payload = run_soak_check(
+        root_dir=root_dir,
+        rail=rail,
+        window_min=window_min,
+        forced_blocked_env_reason=forced_reason,
+        requested_root=requested_root,
+    )
+    print(f"Soak Gate v1: {'PASS' if payload.get('ok') else 'FAIL'}")
+    print(str(payload.get("summary_paragraph") or "No summary available."))
+    print(f"receipt: {payload.get('receipt_path')}")
+    print(f"report: {payload.get('report_path')}")
+    return 0 if bool(payload.get("ok")) else 2
+
+
 def _explain_starting_xi_providers(root_dir: Path, doctor_payload: dict, *, cost_mode: str) -> dict:
     try:
         from agency import starting_xi as starting_xi_mod  # type: ignore
@@ -7370,6 +7408,19 @@ def main(argv=None) -> int:
     p_microfilm_check.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
     p_microfilm_check.add_argument("--rail", choices=["lab", "prod"], help="Rail objetivo.")
     p_microfilm_check.set_defaults(func=cmd_microfilm_check)
+
+    p_soak = sub.add_parser("soak", help="Soak Gate v1 (arranque/reanudo/horas).")
+    soak_sub = p_soak.add_subparsers(dest="soak_cmd", required=True)
+    p_soak_check = soak_sub.add_parser("check", help="Ejecuta soak gate ALIVE/EFFECTIVE/SAFE.")
+    p_soak_check.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
+    p_soak_check.add_argument("--rail", choices=["lab", "prod"], help="Rail objetivo.")
+    p_soak_check.add_argument(
+        "--window-min",
+        type=int,
+        default=60,
+        help="Ventana en minutos para actividad efectiva (default 60).",
+    )
+    p_soak_check.set_defaults(func=cmd_soak_check)
 
     p_tools = sub.add_parser("tools", help="Inventario y estado de tools.")
     p_tools_sub = p_tools.add_subparsers(dest="tools_cmd", required=True)
