@@ -1,0 +1,7 @@
+schema: ajax.experiments_registry.v1
+experiments:
+  UI-001:
+    id: UI-001
+    status: CANCELLED
+    reason: "No ROI / Alto ruido / No estable"
+    cancelled_at_utc: "2026-02-21T00:00:00Z"
