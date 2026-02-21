@@ -18,6 +18,12 @@ except Exception:  # pragma: no cover
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "config" / "lab_org_manifest.yaml"
 DEFAULT_EXPLORE_POLICY = ROOT / "config" / "explore_policy.yaml"
+MAINTENANCE_ALLOWLIST = (
+    "providers_probe",
+    "capabilities_refresh",
+    "doctor_*",
+    "health_*",
+)
 
 
 def _utc_now() -> str:
@@ -175,6 +181,21 @@ def _pick_next(due: List[Dict[str, Any]], last_job_ts: Dict[str, Any]) -> Option
     return sorted(due, key=key)[0]
 
 
+def _is_maintenance_job_kind(kind: str) -> bool:
+    normalized = str(kind or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"providers_probe", "capabilities_refresh"}:
+        return True
+    for prefix in ("doctor", "health"):
+        if normalized == prefix:
+            return True
+        for sep in ("_", "-", ":", "/", "."):
+            if normalized.startswith(f"{prefix}{sep}"):
+                return True
+    return False
+
+
 def lab_org_tick(
     root_dir: Path,
     *,
@@ -216,6 +237,8 @@ def lab_org_tick(
         "state": None,
         "trigger": None,
         "human_active": None,
+        "mode": "NORMAL",
+        "allowlist_used": [],
         "selected_job": None,
         "reason": None,
         "skipped_reason": None,
@@ -242,6 +265,9 @@ def lab_org_tick(
         receipt["state"] = explore_eval.get("state")
         receipt["trigger"] = explore_eval.get("trigger")
         receipt["human_active"] = bool(explore_eval.get("human_active"))
+        if receipt["human_active"]:
+            receipt["mode"] = "MAINTENANCE_ONLY"
+            receipt["allowlist_used"] = list(MAINTENANCE_ALLOWLIST)
 
         if receipt["trigger"] == "AWAY->HUMAN_DETECTED":
             cancelled = _preempt_lab_org_ui_jobs(root, store, reason="preempt_human_detected")
@@ -277,6 +303,12 @@ def lab_org_tick(
 
         state = str(receipt.get("state") or "HUMAN_DETECTED")
         if state == "HUMAN_DETECTED":
+            if receipt.get("human_active"):
+                due = [c for c in due if _is_maintenance_job_kind(str(c.get("job_kind") or ""))]
+                if not due:
+                    receipt["skipped_reason"] = "maintenance_only_no_due"
+                    receipt["reason"] = "maintenance_only_no_due"
+                    return receipt
             # Block UI intrusive by default while human detected.
             if not due:
                 receipt["skipped_reason"] = "no_due_jobs"
