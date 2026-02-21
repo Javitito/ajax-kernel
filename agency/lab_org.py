@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agency.experiment_cancellation import get_experiment_record, is_experiment_cancelled
 from agency.explore_policy import dummy_display_ok, evaluate_explore_state, load_explore_policy, state_rules
 from agency.human_permission import read_human_permission_status
 from agency.lab_control import LabStateStore
@@ -242,6 +243,8 @@ def lab_org_tick(
         "selected_job": None,
         "reason": None,
         "skipped_reason": None,
+        "experiment_id": None,
+        "cancelled_experiments_skipped": [],
         "actionable_hint": None,
         "forced_non_ui_due": False,
         "last_job_ts": dict(last_job_ts),
@@ -367,6 +370,31 @@ def lab_org_tick(
                     receipt["reason"] = "dummy_display_required"
                 return receipt
             due = filtered
+
+        non_cancelled_due: List[Dict[str, Any]] = []
+        cancelled_due: List[str] = []
+        for item in due:
+            experiment_id = str(item.get("id") or "").strip().upper()
+            if experiment_id and is_experiment_cancelled(root, experiment_id):
+                cancelled_due.append(experiment_id)
+                continue
+            non_cancelled_due.append(item)
+        if cancelled_due:
+            receipt["cancelled_experiments_skipped"] = sorted(set(cancelled_due))
+        due = non_cancelled_due
+        if not due:
+            if cancelled_due:
+                experiment_id = cancelled_due[0]
+                row = get_experiment_record(root, experiment_id) or {}
+                receipt["skipped_reason"] = "experiment_cancelled"
+                receipt["reason"] = "experiment_cancelled"
+                receipt["experiment_id"] = experiment_id
+                if row.get("reason"):
+                    receipt["actionable_hint"] = str(row.get("reason"))
+                return receipt
+            receipt["skipped_reason"] = "no_due_jobs"
+            receipt["reason"] = "no_due_jobs"
+            return receipt
 
         picked = _pick_next(due, last_job_ts)
         if not picked:
