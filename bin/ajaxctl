@@ -158,7 +158,6 @@ def _load_env_file(path: Path) -> None:
 
 # Auto-cargar .env (p.ej. GROQ_API_KEY) antes de inicializar AjaxCore o tareas
 _load_env_file(ROOT / ".env")
-_load_env_file(ROOT.parent / ".env")
 
 AUTO_CRYSTALLIZE_FLAG = ROOT / "artifacts" / "state" / "auto_crystallize.flag"
 
@@ -5370,97 +5369,6 @@ def _latest_undo_plan_path(root_dir: Path) -> Optional[str]:
     return str(latest)
 
 
-def cmd_constitution_check(args: argparse.Namespace) -> int:
-    try:
-        root_dir = _detect_repo_root(getattr(args, "root", None))
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    try:
-        from agency.constitution_guard import run_constitution_check  # type: ignore
-    except Exception as exc:
-        print(f"Constitution guard unavailable: {exc}", file=sys.stderr)
-        return 3
-
-    payload = run_constitution_check(root_dir=root_dir, write_receipt=True)
-    if bool(getattr(args, "json", False)):
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(f"Constitution check: {'PASS' if payload.get('ok') else 'FAIL'}")
-        print(f"code: {payload.get('code')}")
-        hint = str(payload.get("actionable_hint") or "").strip() or "No action required."
-        print(f"actionable_hint: {hint}")
-        if payload.get("receipt_path"):
-            print(f"receipt: {payload.get('receipt_path')}")
-    return 0 if bool(payload.get("ok")) else 2
-
-
-def cmd_constitution_seal(args: argparse.Namespace) -> int:
-    try:
-        root_dir = _detect_repo_root(getattr(args, "root", None))
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    try:
-        from agency.constitution_guard import seal_manifest, run_constitution_check  # type: ignore
-    except Exception as exc:
-        print(f"Constitution guard unavailable: {exc}", file=sys.stderr)
-        return 3
-
-    human_confirmed = bool(getattr(args, "human_confirmed", False))
-    permit_status: Dict[str, Any] = {"ok": False, "reason": "permission_reader_unavailable"}
-    if read_human_permission_status is not None:
-        try:
-            permit_status = read_human_permission_status(root_dir)
-        except Exception as exc:
-            permit_status = {"ok": False, "error": str(exc)[:200]}
-    permit_ok = human_confirmed or bool(permit_status.get("ok"))
-    if not permit_ok:
-        payload = {
-            "ok": False,
-            "status": "BLOCKED",
-            "code": "BLOCKED_CONSTITUTION_SEAL_REQUIRES_CONFIRMATION",
-            "actionable_hint": (
-                "Run with --human-confirmed or enable permit TTL via "
-                "`python bin/ajaxctl permit 120`."
-            ),
-            "human_confirmed": human_confirmed,
-            "permit_status": permit_status,
-        }
-        if bool(getattr(args, "json", False)):
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-        else:
-            print("Constitution seal: BLOCKED")
-            print(f"code: {payload.get('code')}")
-            print(f"actionable_hint: {payload.get('actionable_hint')}")
-        return 2
-
-    seal_payload = seal_manifest(root_dir=root_dir)
-    check_payload = run_constitution_check(root_dir=root_dir, write_receipt=True)
-    payload = {
-        "ok": bool(seal_payload.get("ok")) and bool(check_payload.get("ok")),
-        "seal": seal_payload,
-        "check": check_payload,
-        "manifest_path": seal_payload.get("manifest_path"),
-        "receipt_path": check_payload.get("receipt_path"),
-    }
-    if bool(getattr(args, "json", False)):
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(f"Constitution seal: {'PASS' if payload.get('ok') else 'FAIL'}")
-        if seal_payload.get("manifest_path"):
-            print(f"manifest: {seal_payload.get('manifest_path')}")
-        if check_payload.get("receipt_path"):
-            print(f"receipt: {check_payload.get('receipt_path')}")
-        if not payload.get("ok"):
-            hint = str(
-                check_payload.get("actionable_hint") or seal_payload.get("actionable_hint") or ""
-            ).strip()
-            if hint:
-                print(f"actionable_hint: {hint}")
-    return 0 if bool(payload.get("ok")) else 2
-
-
 def _write_microfilm_report(root_dir: Path, payload: Dict[str, Any]) -> Path:
     report_dir = root_dir / "artifacts" / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -5508,7 +5416,6 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
         rail = "lab"
     try:
         from agency.anchor_preflight import run_anchor_preflight  # type: ignore
-        from agency.constitution_guard import run_constitution_check  # type: ignore
         from agency.health_ttl import provider_status_ttl  # type: ignore
         try:
             from agency.lab_dummy_driver import is_dummy_driver_simulated  # type: ignore
@@ -5527,34 +5434,6 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
 
     ts_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     checks: list[Dict[str, Any]] = []
-
-    constitution_payload: Dict[str, Any]
-    try:
-        constitution_payload = run_constitution_check(root_dir=root_dir, write_receipt=True)
-    except Exception as exc:
-        constitution_payload = {
-            "ok": False,
-            "status": "BLOCKED",
-            "code": "BLOCKED_CONSTITUTION_TAMPERED",
-            "actionable_hint": "Run: python bin/ajaxctl constitution seal",
-            "reason": f"constitution_guard_exception:{str(exc)[:200]}",
-        }
-    checks.append(
-        {
-            "name": "constitution_check",
-            "ok": bool(constitution_payload.get("ok")),
-            "code": str(
-                constitution_payload.get("code")
-                or ("CONSTITUTION_OK" if bool(constitution_payload.get("ok")) else "BLOCKED_CONSTITUTION_TAMPERED")
-            ),
-            "actionable_hint": (
-                str(constitution_payload.get("actionable_hint") or "").strip()
-                or ("Run: python bin/ajaxctl constitution seal" if not bool(constitution_payload.get("ok")) else "")
-            ),
-            "receipt_path": constitution_payload.get("receipt_path"),
-            "detail": constitution_payload,
-        }
-    )
 
     anchor_payload: Dict[str, Any]
     try:
@@ -7561,28 +7440,6 @@ def main(argv=None) -> int:
     )
     p_whereami.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
     p_whereami.set_defaults(func=cmd_whereami)
-
-    p_constitution = sub.add_parser(
-        "constitution", help="Constitution Lock v1 (hash-manifest + fail-closed)."
-    )
-    constitution_sub = p_constitution.add_subparsers(dest="constitution_cmd", required=True)
-    p_constitution_check = constitution_sub.add_parser(
-        "check", help="Verifica hashes de la constitución y emite receipt."
-    )
-    p_constitution_check.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
-    p_constitution_check.add_argument("--json", action="store_true", help="Salida JSON.")
-    p_constitution_check.set_defaults(func=cmd_constitution_check)
-    p_constitution_seal = constitution_sub.add_parser(
-        "seal", help="Regenera manifest de hashes con estado actual."
-    )
-    p_constitution_seal.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
-    p_constitution_seal.add_argument(
-        "--human-confirmed",
-        action="store_true",
-        help="Confirmación humana explícita para permitir seal.",
-    )
-    p_constitution_seal.add_argument("--json", action="store_true", help="Salida JSON.")
-    p_constitution_seal.set_defaults(func=cmd_constitution_seal)
 
     p_microfilm = sub.add_parser("microfilm", help="Microfilm Compliance v1 checks.")
     microfilm_sub = p_microfilm.add_subparsers(dest="microfilm_cmd", required=True)
