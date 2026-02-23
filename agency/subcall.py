@@ -129,10 +129,24 @@ def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _extract_codex_jsonl(raw: str) -> Tuple[Optional[str], Optional[str]]:
-    last_text: Optional[str] = None
-    last_error: Optional[str] = None
-    for line in (raw or "").splitlines():
+def _iter_json_events(raw: str):
+    text = (raw or "").strip()
+    if not text:
+        return
+    # Some codex-cli builds return a single JSON array of events instead of JSONL.
+    try:
+        whole = json.loads(text)
+    except Exception:
+        whole = None
+    if isinstance(whole, dict):
+        yield whole
+        return
+    if isinstance(whole, list):
+        for item in whole:
+            if isinstance(item, dict):
+                yield item
+        return
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -140,22 +154,77 @@ def _extract_codex_jsonl(raw: str) -> Tuple[Optional[str], Optional[str]]:
             event = json.loads(line)
         except Exception:
             continue
-        if not isinstance(event, dict):
+        if isinstance(event, dict):
+            yield event
             continue
+        if isinstance(event, list):
+            for item in event:
+                if isinstance(item, dict):
+                    yield item
+
+
+def _extract_text_from_message_payload(payload: Any) -> Optional[str]:
+    if isinstance(payload, str):
+        txt = payload.strip()
+        return txt or None
+    if isinstance(payload, list):
+        parts: List[str] = []
+        for item in payload:
+            text = _extract_text_from_message_payload(item)
+            if text:
+                parts.append(text)
+        if parts:
+            return "\n".join(parts)
+        return None
+    if isinstance(payload, dict):
+        for key in ("text", "output_text"):
+            value = payload.get(key)
+            text = _extract_text_from_message_payload(value)
+            if text:
+                return text
+        for key in ("result", "content", "message", "item"):
+            value = payload.get(key)
+            text = _extract_text_from_message_payload(value)
+            if text:
+                return text
+    return None
+
+
+def _extract_codex_jsonl(raw: str) -> Tuple[Optional[str], Optional[str]]:
+    last_text: Optional[str] = None
+    last_error: Optional[str] = None
+    for event in _iter_json_events(raw):
         if event.get("type") == "error":
             msg = event.get("message")
             if isinstance(msg, str) and msg.strip():
                 last_error = msg.strip()
+            err_text = _extract_text_from_message_payload(event)
+            if err_text:
+                last_error = err_text
         if event.get("type") == "item.completed":
             item = event.get("item")
             if not isinstance(item, dict):
                 continue
             if str(item.get("type") or "") not in {"agent_message", "assistant_message", "message"}:
                 continue
-            text = item.get("text") or item.get("content")
-            if isinstance(text, str) and text.strip():
-                last_text = text.strip()
+            text = _extract_text_from_message_payload(item)
+            if text:
+                last_text = text
+        if str(event.get("type") or "") in {"agent_message", "assistant_message", "message", "assistant", "result"}:
+            text = _extract_text_from_message_payload(event)
+            if text:
+                last_text = text
     return last_text, last_error
+
+
+def _parse_json_object_or_event_wrapped(text: str) -> Optional[Dict[str, Any]]:
+    parsed = _parse_json_object(text)
+    if parsed is not None:
+        return parsed
+    extracted_text, _ = _extract_codex_jsonl(text)
+    if extracted_text:
+        return _parse_json_object(extracted_text)
+    return None
 
 
 def _estimate_tokens(text: str) -> int:
@@ -643,7 +712,7 @@ def run_subcall(
                 attempt_text = res.text
                 attempt_tokens = int(res.tokens or 0)
                 if json_mode:
-                    parsed = _parse_json_object(attempt_text)
+                    parsed = _parse_json_object_or_event_wrapped(attempt_text or "")
                     schema_err = None
                     if parsed is not None and role_n == "validator":
                         schema_err = _validate_validator_schema(parsed)
@@ -657,7 +726,7 @@ def run_subcall(
                         res2 = caller(provider, cfg, system_prompt, repair_user, True)
                         attempt_text = res2.text
                         attempt_tokens += int(res2.tokens or 0)
-                        parsed2 = _parse_json_object(attempt_text)
+                        parsed2 = _parse_json_object_or_event_wrapped(attempt_text or "")
                         schema_err2 = None
                         if parsed2 is not None and role_n == "validator":
                             schema_err2 = _validate_validator_schema(parsed2)
