@@ -38,6 +38,7 @@ STRICT_JSON_ONLY = (
 )
 
 _QUOTA_TOKENS: Optional[List[str]] = None
+_CLI_DEFAULT_MODEL_PROVIDERS = {"codex_brain", "gemini_cli", "qwen_cli"}
 
 
 def _quota_exhausted_tokens() -> List[str]:
@@ -173,6 +174,92 @@ def _load_provider_configs(root_dir: Path) -> Dict[str, Any]:
             data = {}
 
     return data if isinstance(data, dict) else {"providers": {}}
+
+
+def _configured_model_value(cfg: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(cfg, dict):
+        return None
+    model = cfg.get("default_model") or cfg.get("model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
+def _uses_default_model_reporting(provider: str, cfg: Dict[str, Any]) -> bool:
+    name = str(provider or "").strip()
+    kind = str(cfg.get("kind") or "").strip().lower()
+    return bool(name in _CLI_DEFAULT_MODEL_PROVIDERS and kind in {"cli", "codex_cli_jsonl"})
+
+
+def _provider_model_effective(provider: str, cfg: Dict[str, Any]) -> Optional[str]:
+    if _uses_default_model_reporting(provider, cfg):
+        return "DEFAULT"
+    return _configured_model_value(cfg)
+
+
+def _strip_model_flags_for_default_cli(provider: str, cfg: Dict[str, Any], cmd_template: List[Any]) -> List[str]:
+    if not _uses_default_model_reporting(provider, cfg):
+        return [str(tok) for tok in cmd_template]
+    out: List[str] = []
+    skip_next = False
+    for raw in cmd_template:
+        tok = str(raw)
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == "--model":
+            skip_next = True
+            continue
+        if tok.startswith("--model="):
+            continue
+        if tok == "{model}":
+            continue
+        out.append(tok)
+    return out
+
+
+def _extract_model_flag_from_command(command: Any) -> Optional[str]:
+    if not isinstance(command, str) or not command.strip():
+        return None
+    try:
+        tokens = shlex.split(command)
+    except Exception:
+        tokens = command.strip().split()
+    for idx, tok in enumerate(tokens):
+        if tok == "--model" and idx + 1 < len(tokens):
+            val = str(tokens[idx + 1]).strip()
+            return val or None
+        if tok.startswith("--model="):
+            val = tok.split("=", 1)[1].strip()
+            return val or None
+    return None
+
+
+def _provider_status_model_observed(entry: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+    for candidate in (
+        entry.get("transport"),
+        ((entry.get("transport") or {}).get("evidence") if isinstance(entry.get("transport"), dict) else None),
+    ):
+        if isinstance(candidate, dict):
+            observed = _extract_model_flag_from_command(candidate.get("command"))
+            if observed:
+                return observed
+    breathing = entry.get("breathing") if isinstance(entry.get("breathing"), dict) else {}
+    roles_map = breathing.get("roles") if isinstance(breathing.get("roles"), dict) else {}
+    for role_data in roles_map.values():
+        if not isinstance(role_data, dict):
+            continue
+        observed = _extract_model_flag_from_command(role_data.get("command"))
+        if observed:
+            return observed
+        evidence = role_data.get("evidence")
+        if isinstance(evidence, dict):
+            observed = _extract_model_flag_from_command(evidence.get("command"))
+            if observed:
+                return observed
+    return None
 
 
 @dataclass
@@ -555,7 +642,8 @@ def _probe_cli(provider: str, cfg: Dict[str, Any], role: str, timeout_sec: int) 
         prompt = "Return exactly: OK"
     cmd: List[str] = []
     used_prompt = False
-    for tok in cmd_template:
+    cmd_template_n = _strip_model_flags_for_default_cli(provider, cfg, cmd_template)
+    for tok in cmd_template_n:
         if tok == "{model}":
             cmd.append(str(model))
         elif tok == "{prompt}":
@@ -633,7 +721,6 @@ def _probe_cli(provider: str, cfg: Dict[str, Any], role: str, timeout_sec: int) 
 
 
 def _probe_codex_jsonl(provider: str, cfg: Dict[str, Any], role: str, timeout_sec: int) -> ProbeResult:
-    model = cfg.get("default_model") or cfg.get("model") or ""
     if os.name == "nt":
         wsl = shutil.which("wsl.exe")
         if not wsl:
@@ -645,7 +732,6 @@ def _probe_codex_jsonl(provider: str, cfg: Dict[str, Any], role: str, timeout_se
                 command="wsl.exe (missing)",
             )
         distro = (os.getenv("AJAX_WSL_DISTRO") or os.getenv("WSL_DISTRO_NAME") or "Ubuntu").strip()
-        model_arg = f" --model {shlex.quote(str(model))}" if isinstance(model, str) and model.strip() else ""
         cmd = [
             wsl,
             "-d",
@@ -653,14 +739,12 @@ def _probe_codex_jsonl(provider: str, cfg: Dict[str, Any], role: str, timeout_se
             "--",
             "bash",
             "-lc",
-            f"echo ping | codex exec --json --skip-git-repo-check{model_arg}",
+            "echo ping | codex exec --json --skip-git-repo-check",
         ]
         cmd_str = "wsl: " + " ".join(cmd)
         stdin = None
     else:
         cmd = ["codex", "exec", "--json", "--skip-git-repo-check"]
-        if isinstance(model, str) and model.strip():
-            cmd.extend(["--model", str(model).strip()])
         cmd_str = "native: " + " ".join(cmd)
         stdin = "ping\n"
     started = _now_ts()
@@ -768,6 +852,7 @@ class ProviderBreathingLoop:
                 entry = {}
                 providers_status[name] = entry
             entry["capabilities"] = _capabilities_for_cfg(cfg)
+            entry["model_effective"] = _provider_model_effective(name, cfg)
             entry["policy_state"] = {
                 "text": _policy_state(policy_doc, name, "text"),
                 "vision": _policy_state(policy_doc, name, "vision"),
@@ -859,6 +944,7 @@ class ProviderBreathingLoop:
             elif not reason and breathing.get("contract_status") == "DOWN":
                 reason = "contract_down"
             entry["unavailable_reason"] = reason or None
+            entry["model_observed"] = _provider_status_model_observed(entry)
 
         status_doc["updated_at"] = now
         status_doc["updated_utc"] = _iso_now(now)

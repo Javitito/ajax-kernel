@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,9 @@ from agency.provider_failure_policy import (
     quota_exhausted_tokens,
 )
 from agency.provider_policy import load_provider_policy
+
+
+_CLI_DEFAULT_MODEL_PROVIDERS = {"codex_brain", "gemini_cli", "qwen_cli"}
 
 
 def _now_ts() -> float:
@@ -110,9 +114,58 @@ def _default_cooldown_seconds(reason: str) -> int:
     return 60
 
 
-def _pick_model_id(cfg: Dict[str, Any]) -> Optional[str]:
+def _extract_model_flag_from_command(command: Any) -> Optional[str]:
+    if not isinstance(command, str) or not command.strip():
+        return None
+    try:
+        tokens = shlex.split(command)
+    except Exception:
+        tokens = command.strip().split()
+    for idx, tok in enumerate(tokens):
+        if tok == "--model" and idx + 1 < len(tokens):
+            val = str(tokens[idx + 1]).strip()
+            return val or None
+        if tok.startswith("--model="):
+            val = tok.split("=", 1)[1].strip()
+            return val or None
+    return None
+
+
+def _observed_model_from_status_entry(entry: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+    for candidate in (
+        entry.get("transport"),
+        ((entry.get("transport") or {}).get("evidence") if isinstance(entry.get("transport"), dict) else None),
+    ):
+        if isinstance(candidate, dict):
+            observed = _extract_model_flag_from_command(candidate.get("command"))
+            if observed:
+                return observed
+    breathing = entry.get("breathing") if isinstance(entry.get("breathing"), dict) else {}
+    roles = breathing.get("roles") if isinstance(breathing.get("roles"), dict) else {}
+    for role_data in roles.values():
+        if not isinstance(role_data, dict):
+            continue
+        observed = _extract_model_flag_from_command(role_data.get("command"))
+        if observed:
+            return observed
+        evidence = role_data.get("evidence")
+        if isinstance(evidence, dict):
+            observed = _extract_model_flag_from_command(evidence.get("command"))
+            if observed:
+                return observed
+    return None
+
+
+def _pick_model_id(provider: str, cfg: Dict[str, Any], *, status_entry: Optional[Dict[str, Any]] = None) -> Optional[str]:
     if not isinstance(cfg, dict):
         return None
+    kind = str(cfg.get("kind") or "").strip().lower()
+    provider_n = str(provider or "").strip()
+    if provider_n in _CLI_DEFAULT_MODEL_PROVIDERS and kind in {"cli", "codex_cli_jsonl"}:
+        observed = _observed_model_from_status_entry(status_entry or {})
+        return observed or "DEFAULT"
     model_id = cfg.get("_selected_model") or cfg.get("default_model") or cfg.get("model")
     if isinstance(model_id, str) and model_id.strip():
         return model_id.strip()
@@ -180,6 +233,7 @@ class LedgerRow:
         return {
             "provider": self.provider,
             "model": self.model,
+            "model_effective": self.model,
             "role": self.role,
             "status": self.status,
             "reason": self.reason,
@@ -591,12 +645,12 @@ class ProviderLedger:
             roles = self._provider_roles(cfg_any)
             if not roles:
                 continue
-            model_id = _pick_model_id(cfg_any)
+            st_entry = self._status_entry(status_doc, str(provider))
+            model_id = _pick_model_id(str(provider), cfg_any, status_entry=st_entry)
             cost_class = self._policy_cost_class(policy, str(provider), cfg_any)
             capabilities = _capabilities_for_cfg(cfg_any)
             policy_state_text = self._policy_state(policy, str(provider), "text")
             policy_state_vision = self._policy_state(policy, str(provider), "vision")
-            st_entry = self._status_entry(status_doc, str(provider))
 
             for role in roles:
                 prev_row = prev_rows.get((str(provider), role), {})
