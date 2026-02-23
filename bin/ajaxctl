@@ -5621,12 +5621,24 @@ def cmd_microfilm_check(args: argparse.Namespace) -> int:
     return 0 if overall_ok else 2
 
 
-def cmd_audit_tx(args: argparse.Namespace) -> int:
+def cmd_audit(args: argparse.Namespace) -> int:
     try:
-        from agency.audits.runner import run_named_audit  # type: ignore
+        from agency.audits.runner import list_registered_audits, run_named_audit  # type: ignore
     except Exception as exc:
         print(f"Audit runner no disponible: {exc}", file=sys.stderr)
         return 3
+    audit_name = str(getattr(args, "audit_name", "") or "").strip().lower()
+    try:
+        registry = list_registered_audits()
+    except Exception:
+        registry = {}
+    if not audit_name:
+        print("Debe indicar un audit (ej: tx).", file=sys.stderr)
+        return 2
+    if registry and audit_name not in registry:
+        known = ", ".join(sorted(registry.keys()))
+        print(f"Audit desconocido: {audit_name}. Disponibles: {known}", file=sys.stderr)
+        return 2
     try:
         root_dir = _detect_repo_root(getattr(args, "root", None))
     except RuntimeError as exc:
@@ -5634,20 +5646,20 @@ def cmd_audit_tx(args: argparse.Namespace) -> int:
         return 2
     try:
         payload = run_named_audit(
-            name="tx",
+            name=audit_name,
             root_dir=root_dir,
             run_id=getattr(args, "run_id", None),
             last=int(getattr(args, "last", 1) or 1),
         )
     except Exception as exc:
-        print(f"Fallo en audit tx: {exc}", file=sys.stderr)
+        print(f"Fallo en audit {audit_name}: {exc}", file=sys.stderr)
         return 2
     if getattr(args, "json", False):
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
         print(
-            "audit tx "
+            f"audit {audit_name} "
             f"ok={bool(payload.get('ok'))} "
             f"critical={int(summary.get('critical') or 0)} "
             f"error={int(summary.get('error') or 0)} "
@@ -7451,19 +7463,30 @@ def main(argv=None) -> int:
     p_microfilm_check.set_defaults(func=cmd_microfilm_check)
 
     p_audit = sub.add_parser("audit", help="Auditorías operativas read-only.")
-    audit_sub = p_audit.add_subparsers(dest="audit_cmd", required=True)
-    p_audit_tx = audit_sub.add_parser(
-        "tx",
-        help="Transactional Integrity + Proof-Carrying Claims Audit (read-only sobre runs).",
+    try:
+        from agency.audits.runner import list_registered_audits as _list_registered_audits  # type: ignore
+
+        _audit_names = sorted(_list_registered_audits().keys())
+    except Exception:
+        _audit_names = []
+    p_audit.add_argument(
+        "audit_name",
+        nargs="?",
+        choices=_audit_names if _audit_names else None,
+        help=(
+            "Nombre de auditoría"
+            + (f" ({', '.join(_audit_names)})" if _audit_names else "")
+            + "."
+        ),
     )
-    p_audit_tx.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
-    p_audit_tx_scope = p_audit_tx.add_mutually_exclusive_group()
-    p_audit_tx_scope.add_argument("--run", dest="run_id", help="Run ID específico a auditar.")
-    p_audit_tx_scope.add_argument(
+    p_audit.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
+    p_audit_scope = p_audit.add_mutually_exclusive_group()
+    p_audit_scope.add_argument("--run", dest="run_id", help="Run ID específico a auditar.")
+    p_audit_scope.add_argument(
         "--last", type=int, default=1, help="Audita los últimos N runs (default: 1)."
     )
-    p_audit_tx.add_argument("--json", action="store_true", help="Salida JSON.")
-    p_audit_tx.set_defaults(func=cmd_audit_tx)
+    p_audit.add_argument("--json", action="store_true", help="Salida JSON.")
+    p_audit.set_defaults(func=cmd_audit)
 
     p_soak = sub.add_parser("soak", help="Soak Gate v1 (arranque/reanudo/horas).")
     soak_sub = p_soak.add_subparsers(dest="soak_cmd", required=True)
