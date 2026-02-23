@@ -217,6 +217,10 @@ def compute_human_active(
     threshold_s: float,
     unknown_as_human: bool,
 ) -> Tuple[bool, str]:
+    # If the probe explicitly reports failure, do not trust any payload fields
+    # (some bootstrap stubs emit placeholder values that would look "active").
+    if signal.get("ok") is False:
+        return (bool(unknown_as_human), "signal_not_ok")
     age = signal.get("last_input_age_sec")
     unlocked = signal.get("session_unlocked")
     try:
