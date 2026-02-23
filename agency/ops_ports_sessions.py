@@ -5,9 +5,12 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -96,6 +99,41 @@ def _run(cmd: List[str], *, cwd: Optional[Path] = None, timeout: Optional[int] =
         check=False,
         **run_kwargs,
     )
+
+
+def _probe_local_port_listening(port: int, host: str = "127.0.0.1", timeout_s: float = 0.4) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout_s)
+            return sock.connect_ex((host, int(port))) == 0
+    except Exception:
+        return False
+
+
+def _probe_local_health(port: int, host: str = "127.0.0.1", timeout_s: float = 1.5) -> bool:
+    url = f"http://{host}:{int(port)}/health"
+    headers: Dict[str, str] = {}
+    try:
+        from agency.driver_keys import load_ajax_driver_api_key
+
+        api_key = load_ajax_driver_api_key()
+        if api_key:
+            headers["X-AJAX-KEY"] = str(api_key)
+    except Exception:
+        pass
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw)
+        return bool(isinstance(payload, dict) and payload.get("ok"))
+    except urllib.error.HTTPError as exc:
+        # Reachable driver with auth challenge should still count as online.
+        if int(getattr(exc, "code", 0)) in {401, 403}:
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -1562,21 +1600,29 @@ def run_services_doctor(
     expected_users = _resolve_expected_users(cfg)
     expected_ports = sorted(expected_users.keys()) if expected_users else list(DEFAULT_PORTS)
     session_users = sorted({user for user in expected_users.values() if user})
+    fallback_local_probe = bool(not ps_script.exists() or proc.returncode != 0)
     sessions = _parse_qwinsta_sessions(qwinsta_text, users=session_users)
     ports_map = _load_ports_map(ports_path) if ports_path.exists() else {}
+    if fallback_local_probe:
+        for port in expected_ports:
+            if _probe_local_port_listening(int(port)):
+                ports_map[int(port)] = {"SessionId": None, "LocalProbe": True}
     tasks = _load_tasks_csv(tasks_csv_path)
 
     health: Dict[int, bool] = {}
     for port in expected_ports:
         hp = out_dir / f"health_{port}.json"
-        if not hp.exists():
-            health[port] = False
+        if hp.exists():
+            try:
+                payload = _load_json(hp)
+                health[port] = bool(payload.get("ok"))
+                continue
+            except Exception:
+                pass
+        if fallback_local_probe:
+            health[port] = _probe_local_health(int(port))
             continue
-        try:
-            payload = _load_json(hp)
-            health[port] = bool(payload.get("ok"))
-        except Exception:
-            health[port] = False
+        health[port] = False
 
     ports_in_expected: Dict[str, bool] = {}
     for port, expected_user in expected_users.items():
@@ -1612,6 +1658,7 @@ def run_services_doctor(
         "schema": "ajax.doctor.services.v0",
         "timestamp_utc": _utc_now(),
         "out_dir": str(out_dir),
+        "fallback_local_probe": fallback_local_probe,
         "mode": str(cfg.get("mode") or "multi_user"),
         "expected_users": {str(k): v for k, v in expected_users.items()},
         "sessions": sessions,

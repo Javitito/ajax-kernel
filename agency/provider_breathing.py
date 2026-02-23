@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover
     yaml = None  # type: ignore
 
 from agency.auth_manager import AuthManager
+from agency.provider_policy import load_provider_policy
 
 PIDFILE = ROOT / "artifacts" / "health" / "provider_breathing.pid"
 
@@ -260,22 +261,10 @@ def _capabilities_for_cfg(cfg: Dict[str, Any]) -> Dict[str, bool]:
 
 
 def _load_policy() -> Dict[str, Any]:
-    path_yaml = ROOT / "config" / "provider_policy.yaml"
-    path_json = ROOT / "config" / "provider_policy.json"
-    data: Any = None
-
-    if yaml is not None and path_yaml.exists():
-        try:
-            data = yaml.safe_load(path_yaml.read_text(encoding="utf-8")) or {}
-        except Exception:
-            data = None
-
-    if data is None and path_json.exists():
-        try:
-            data = json.loads(path_json.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-
+    try:
+        data = load_provider_policy(ROOT)
+    except Exception:
+        data = {}
     return data if isinstance(data, dict) else {}
 
 

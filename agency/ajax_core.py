@@ -304,6 +304,34 @@ try:
     from agency import provider_ranker
 except ImportError:  # pragma: no cover
     provider_ranker = None  # type: ignore
+try:
+    from agency.policy_contract import validate_policy_contract
+except ImportError:  # pragma: no cover
+    validate_policy_contract = None  # type: ignore
+try:
+    from agency.anchor_preflight import run_anchor_preflight
+except ImportError:  # pragma: no cover
+    run_anchor_preflight = None  # type: ignore
+
+try:
+    from agency.display_targets import load_display_map
+except ImportError:  # pragma: no cover
+    load_display_map = None  # type: ignore
+
+try:
+    from agency.microfilm_guard import (
+        enforce_ssc as microfilm_enforce_ssc,
+        enforce_verify_before_done as microfilm_enforce_verify_before_done,
+        enforce_lab_prod_separation as microfilm_enforce_lab_prod_separation,
+        enforce_evidence_tiers as microfilm_enforce_evidence_tiers,
+        enforce_undo_for_reversible as microfilm_enforce_undo_for_reversible,
+    )
+except ImportError:  # pragma: no cover
+    microfilm_enforce_ssc = None  # type: ignore
+    microfilm_enforce_verify_before_done = None  # type: ignore
+    microfilm_enforce_lab_prod_separation = None  # type: ignore
+    microfilm_enforce_evidence_tiers = None  # type: ignore
+    microfilm_enforce_undo_for_reversible = None  # type: ignore
 
 try:
     import yaml  # type: ignore
@@ -846,6 +874,25 @@ class AjaxCore:
         except Exception:
             self._register_driver_failure("health_failed")
             return False
+
+    def _driver_health_snapshot(self) -> Dict[str, Any]:
+        if not self.driver:
+            return {"ok": False, "simulated": False}
+        try:
+            res = self.driver.health()
+            if isinstance(res, dict):
+                return dict(res)
+            return {"ok": True, "simulated": False}
+        except Exception:
+            return {"ok": False, "simulated": False}
+
+    def _driver_online(self) -> bool:
+        snap = self._driver_health_snapshot()
+        return bool(snap.get("ok", False))
+
+    def _driver_simulated(self) -> bool:
+        snap = self._driver_health_snapshot()
+        return bool(snap.get("simulated"))
 
     def _build_plan_from_habit(self, habit: "habits.Habit") -> Dict[str, Any]:
         return {
@@ -2908,6 +2955,38 @@ class AjaxCore:
             mission.permission_question = None
             mission.ask_user_request = None
             mission.council_signal = None
+            if microfilm_enforce_verify_before_done is not None:
+                verification_payload: Dict[str, Any] = {}
+                try:
+                    if (
+                        mission.last_result
+                        and isinstance(mission.last_result.detail, dict)
+                        and isinstance(mission.last_result.detail.get("verification"), dict)
+                    ):
+                        verification_payload = dict(mission.last_result.detail.get("verification"))
+                except Exception:
+                    verification_payload = {}
+                done_gate = microfilm_enforce_verify_before_done(
+                    {"status": "DONE", "mission_status": "DONE", "manual_close": True},
+                    verification_payload,
+                )
+                if not bool(done_gate.get("ok")):
+                    mission.status = "BLOCKED"
+                    mission.last_result = AjaxExecutionResult(
+                        success=False,
+                        error=str(done_gate.get("code") or "BLOCKED_VERIFY_REQUIRED"),
+                        path="manual_close",
+                        detail=done_gate,
+                    )
+                    try:
+                        self._record_pending_mission_receipt(
+                            mission_id=mission.mission_id,
+                            choice=option_id,
+                            transition=mission.status,
+                        )
+                    except Exception:
+                        pass
+                    return
             mission.status = "DONE"
             detail = {
                 "mission_id": mission.mission_id,
@@ -3937,6 +4016,51 @@ class AjaxCore:
     def _current_rail(self) -> str:
         raw = os.getenv("AJAX_RAIL") or os.getenv("AJAX_ENV") or os.getenv("AJAX_MODE") or "lab"
         return str(raw).strip().lower()
+
+    def _read_human_active_flag(self) -> Optional[bool]:
+        paths = [
+            self.config.root_dir / "state" / "human_active.flag",
+            self.config.root_dir / "artifacts" / "state" / "human_active.flag",
+            self.config.root_dir / "artifacts" / "policy" / "human_active.flag",
+        ]
+        for path in paths:
+            try:
+                if not path.exists():
+                    continue
+                raw = path.read_text(encoding="utf-8").strip()
+                if not raw:
+                    continue
+                if raw.startswith("{"):
+                    data = json.loads(raw)
+                    if isinstance(data, dict) and "human_active" in data:
+                        return bool(data.get("human_active"))
+                lowered = raw.lower()
+                if "true" in lowered:
+                    return True
+                if "false" in lowered:
+                    return False
+            except Exception:
+                continue
+        return None
+
+    def _resolve_display_target_label(self, rail: str) -> str:
+        env_target = str(os.getenv("AJAX_DISPLAY_TARGET") or "").strip().lower()
+        if env_target:
+            return env_target
+        if load_display_map is not None:
+            try:
+                payload = load_display_map(self.config.root_dir)
+                targets = (
+                    payload.get("display_targets")
+                    if isinstance(payload.get("display_targets"), dict)
+                    else {}
+                )
+                target = targets.get("lab" if str(rail).strip().lower() == "lab" else "prod")
+                if target is not None:
+                    return "dummy" if str(rail).strip().lower() == "lab" else "primary"
+            except Exception:
+                pass
+        return "dummy" if str(rail).strip().lower() == "lab" else "primary"
 
     @staticmethod
     def _normalize_reason_key(text: Optional[str]) -> str:
@@ -12225,8 +12349,67 @@ class AjaxCore:
             success=True, detail={"executed": plan.steps}, path="act_stub", plan_id=plan.plan_id
         )
 
-    def verify(self, result: AjaxExecutionResult) -> AjaxExecutionResult:
-        # Stub: verificación simple
+    def verify(
+        self,
+        result: AjaxExecutionResult,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> AjaxExecutionResult:
+        detail: Dict[str, Any]
+        if isinstance(result.detail, dict):
+            detail = dict(result.detail)
+        else:
+            detail = {"raw_detail": result.detail} if result.detail is not None else {}
+
+        verification = (
+            detail.get("verification") if isinstance(detail.get("verification"), dict) else {}
+        )
+        verification = dict(verification)
+        verify_ok = bool(verification.get("ok")) if "ok" in verification else bool(result.success)
+        verification["ok"] = verify_ok
+        if "delta" not in verification:
+            verification["delta"] = 0 if verify_ok else 1
+        elif verify_ok:
+            verification["delta"] = 0
+        verification_mode = str(
+            verification.get("verification_mode")
+            or (context or {}).get("verification_mode")
+            or ("real" if result.path == "plan_runner" else "synthetic")
+        ).strip().lower()
+        verification["verification_mode"] = verification_mode
+        if "driver_online" not in verification:
+            verification["driver_online"] = bool(
+                (context or {}).get("driver_online", self._driver_online())
+            )
+        if "driver_simulated" not in verification:
+            verification["driver_simulated"] = bool(
+                (context or {}).get("driver_simulated", self._driver_simulated())
+            )
+
+        if microfilm_enforce_evidence_tiers is not None:
+            try:
+                verification = microfilm_enforce_evidence_tiers(
+                    {
+                        "driver_online": verification.get("driver_online"),
+                        "driver_simulated": verification.get("driver_simulated"),
+                        "verification_mode": verification_mode,
+                    },
+                    verification,
+                )
+            except Exception:
+                pass
+        else:
+            verification["evidence_tier"] = (
+                "real_online"
+                if verify_ok and verification_mode == "real" and verification.get("driver_online")
+                else "synthetic_or_offline"
+            )
+            verification["promote_trust"] = bool(
+                verify_ok and verification_mode == "real" and verification.get("driver_online")
+            )
+
+        detail["verification"] = verification
+        result.detail = detail
         return result
 
     # --- Misión (bucle unificado) ---
@@ -13462,6 +13645,130 @@ class AjaxCore:
         Paso 0 (Starting XI): antes de plan/act, verificar providers+inventario y elegir titulares+banquillo por rol.
         Si falta quorum -> soft abort + gap accionable.
         """
+        rail = os.getenv("AJAX_RAIL") or os.getenv("AJAX_ENV") or os.getenv("AJAX_MODE") or "lab"
+        if validate_policy_contract is None:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_POLICY_CONTRACT_UNAVAILABLE",
+                path="preflight",
+                detail={
+                    "reason": "policy_contract_validator_unavailable",
+                    "terminal_status": "BLOCKED",
+                },
+            )
+            return None, res
+        try:
+            policy_contract = validate_policy_contract(
+                self.config.root_dir,
+                sync_json=True,
+                write_receipt=True,
+            )
+        except Exception as exc:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_POLICY_CONTRACT_FAILED",
+                path="preflight",
+                detail={
+                    "reason": "policy_contract_exception",
+                    "error": str(exc)[:200],
+                    "terminal_status": "BLOCKED",
+                },
+            )
+            return None, res
+        if isinstance(mission.notes, dict):
+            mission.notes["policy_contract"] = policy_contract.to_dict()
+        if not policy_contract.ok:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_POLICY_CONFIG_MISSING",
+                path="preflight",
+                detail={
+                    "reason": policy_contract.reason,
+                    "policy_contract": policy_contract.to_dict(),
+                    "terminal_status": "BLOCKED",
+                },
+                artifacts={"policy_contract_receipt": policy_contract.receipt_path}
+                if policy_contract.receipt_path
+                else None,
+            )
+            return None, res
+        if run_anchor_preflight is None:
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_ANCHOR_GATE_UNAVAILABLE",
+                path="preflight",
+                detail={
+                    "reason": "anchor_preflight_unavailable",
+                    "terminal_status": "BLOCKED",
+                },
+            )
+            return None, res
+        try:
+            anchor_gate = run_anchor_preflight(
+                root_dir=self.config.root_dir,
+                rail=rail,
+                write_receipt=True,
+            )
+        except Exception as exc:
+            anchor_gate = {
+                "ok": False,
+                "status": "BLOCKED",
+                "reason": f"anchor_preflight_exception:{str(exc)[:120]}",
+            }
+        if isinstance(mission.notes, dict):
+            mission.notes["anchor_preflight"] = anchor_gate
+        if not bool(anchor_gate.get("ok")):
+            res = AjaxExecutionResult(
+                success=False,
+                error="BLOCKED_BY_ANCHOR_MISMATCH",
+                path="preflight",
+                detail={
+                    "reason": anchor_gate.get("reason") or "anchor_mismatch",
+                    "anchor_preflight": anchor_gate,
+                    "terminal_status": "BLOCKED",
+                },
+                artifacts={"anchor_receipt": anchor_gate.get("receipt_path")}
+                if anchor_gate.get("receipt_path")
+                else None,
+            )
+            return None, res
+        if microfilm_enforce_lab_prod_separation is not None:
+            try:
+                microfilm_ctx = {
+                    "rail": rail,
+                    "display_target": self._resolve_display_target_label(str(rail)),
+                    "human_active": self._read_human_active_flag(),
+                    "require_display_target": True,
+                    "anchor_mismatches": [
+                        *((anchor_gate.get("mismatches") or []) if isinstance(anchor_gate, dict) else []),
+                        *((anchor_gate.get("warnings") or []) if isinstance(anchor_gate, dict) else []),
+                    ],
+                }
+                rail_gate = microfilm_enforce_lab_prod_separation(microfilm_ctx)
+            except Exception as exc:
+                rail_gate = {
+                    "ok": False,
+                    "status": "BLOCKED",
+                    "code": "BLOCKED_RAIL_MISMATCH",
+                    "actionable_hint": f"microfilm_guard_exception:{str(exc)[:120]}",
+                }
+            try:
+                if isinstance(mission.notes, dict):
+                    mission.notes["microfilm_lab_prod"] = rail_gate
+            except Exception:
+                pass
+            if not bool(rail_gate.get("ok")):
+                res = AjaxExecutionResult(
+                    success=False,
+                    error=str(rail_gate.get("code") or "BLOCKED_RAIL_MISMATCH"),
+                    path="preflight",
+                    detail={
+                        "reason": "microfilm_lab_prod_separation_failed",
+                        "microfilm_guard": rail_gate,
+                        "terminal_status": "BLOCKED",
+                    },
+                )
+                return None, res
         if build_starting_xi is None:
             res = AjaxExecutionResult(
                 success=False,
@@ -13470,7 +13777,6 @@ class AjaxCore:
                 detail={"reason": "starting_xi_module_missing"},
             )
             return None, res
-        rail = os.getenv("AJAX_RAIL") or os.getenv("AJAX_ENV") or os.getenv("AJAX_MODE") or "lab"
         risk_level = "medium"
         try:
             gov = mission.envelope.governance if mission.envelope else None  # type: ignore[union-attr]
@@ -14143,7 +14449,7 @@ class AjaxCore:
             match step.kind:
                 case "EXECUTE_ACTION":
                     err = self._execute_action_step(mission, step)
-                    if err == _AWAIT_USER_SENTINEL:
+                    if err == _AWAIT_USER_SENTINEL or mission.status == "WAITING_FOR_USER":
                         return mission.last_result or AjaxExecutionResult(
                             success=False, error="await_user_input", path="waiting_for_user"
                         )
@@ -14946,6 +15252,50 @@ class AjaxCore:
         plan_requires_physical = self._plan_requires_physical_actions(plan)
         rail = os.getenv("AJAX_RAIL") or os.getenv("AJAX_ENV") or os.getenv("AJAX_MODE") or "lab"
 
+        # SSC snapshot0: obligatorio cuando hay actuation real.
+        if mission.mode != "dry" and plan_requires_physical and mission.envelope:
+            try:
+                if not isinstance(getattr(mission.envelope, "metadata", None), dict):
+                    mission.envelope.metadata = {}
+                snap0 = mission.envelope.metadata.get("snapshot0")
+                if not isinstance(snap0, dict) or not snap0:
+                    mission.envelope.metadata["snapshot0"] = self._capture_snapshot0(mission.envelope)
+            except Exception:
+                pass
+        if mission.mode != "dry" and microfilm_enforce_ssc is not None:
+            snap0 = None
+            try:
+                if mission.envelope and isinstance(getattr(mission.envelope, "metadata", None), dict):
+                    snap0 = mission.envelope.metadata.get("snapshot0")
+            except Exception:
+                snap0 = None
+            ssc_gate = microfilm_enforce_ssc(
+                {"actuation": plan_requires_physical, "snapshot0": snap0}
+            )
+            try:
+                mission.notes["microfilm_ssc"] = ssc_gate
+            except Exception:
+                pass
+            if not bool(ssc_gate.get("ok")):
+                mission.status = "BLOCKED"
+                mission.last_result = AjaxExecutionResult(
+                    success=False,
+                    error=str(ssc_gate.get("code") or "BLOCKED_SSC_MISSING"),
+                    path="microfilm_guard",
+                    detail=ssc_gate,
+                )
+                try:
+                    self._record_exec_receipt(
+                        mission=mission,
+                        mission_id=mission.mission_id,
+                        plan_id=plan.plan_id or plan.id,
+                        result=mission.last_result,
+                        verify_ok=False,
+                    )
+                except Exception:
+                    pass
+                return None
+
         # Gate LAB-actuation (sin HDMI dummy): requiere display visible/activo en rail=lab.
         if mission.mode != "dry" and self.contract_enforcer is not None:
             try:
@@ -15060,6 +15410,7 @@ class AjaxCore:
         if mission.mode != "dry":
             try:
                 plan.metadata = plan.metadata or {}
+                self._tag_reversible_actions(plan)
                 if "preexisting_pids" not in plan.metadata:
                     plan.metadata["preexisting_pids"] = self._collect_preexisting_pids(plan)
             except Exception:
@@ -15071,6 +15422,31 @@ class AjaxCore:
                 self._tx_prepare(mission=mission, plan=plan, attempt=attempt)
             except Exception:
                 pass
+            if microfilm_enforce_undo_for_reversible is not None:
+                undo_gate = microfilm_enforce_undo_for_reversible(plan)
+                try:
+                    mission.notes["microfilm_undo"] = undo_gate
+                except Exception:
+                    pass
+                if not bool(undo_gate.get("ok")):
+                    mission.status = "BLOCKED"
+                    mission.last_result = AjaxExecutionResult(
+                        success=False,
+                        error=str(undo_gate.get("code") or "BLOCKED_UNDO_REQUIRED"),
+                        path="microfilm_guard",
+                        detail=undo_gate,
+                    )
+                    try:
+                        self._record_exec_receipt(
+                            mission=mission,
+                            mission_id=mission.mission_id,
+                            plan_id=plan.plan_id or plan.id,
+                            result=mission.last_result,
+                            verify_ok=False,
+                        )
+                    except Exception:
+                        pass
+                    return None
 
         result = (
             self.act(plan)
@@ -15106,7 +15482,16 @@ class AjaxCore:
                         pass
         except Exception:
             pass
-        result = self.verify(result)
+        result = self.verify(
+            result,
+            context={
+                "driver_online": self._driver_online(),
+                "driver_simulated": self._driver_simulated(),
+                "verification_mode": (
+                    "real" if mission.mode != "dry" and result.path == "plan_runner" else "synthetic"
+                ),
+            },
+        )
         try:
             self._record_exec_receipt(
                 mission=mission,
@@ -15273,8 +15658,35 @@ class AjaxCore:
                     f"found '{actual_title}'. {fallback_reason}".strip()
                 )
 
+        if overall_success and microfilm_enforce_verify_before_done is not None:
+            verification_payload = {}
+            if isinstance(result.detail, dict) and isinstance(result.detail.get("verification"), dict):
+                verification_payload = dict(result.detail.get("verification"))
+            done_gate = microfilm_enforce_verify_before_done(
+                {"status": "DONE", "mission_status": "DONE", "detail": result.detail},
+                verification_payload,
+            )
+            if isinstance(result.detail, dict):
+                result.detail["microfilm_done_gate"] = done_gate
+            if not bool(done_gate.get("ok")):
+                overall_success = False
+                result.error = str(done_gate.get("code") or "BLOCKED_VERIFY_REQUIRED")
+                if not isinstance(result.detail, dict):
+                    result.detail = {}
+                if isinstance(result.detail, dict):
+                    result.detail.setdefault("terminal_status", "BLOCKED")
+                    result.detail.setdefault(
+                        "actionable_hint",
+                        done_gate.get("actionable_hint") or "verification_required_before_done",
+                    )
+
         result.success = overall_success
         if not overall_success and mission.mode != "dry":
+            try:
+                if isinstance(result.detail, dict) and bool((plan.metadata or {}).get("has_reversible_actions")):
+                    result.detail.setdefault("undo_flow", "triggered")
+            except Exception:
+                pass
             try:
                 self._cleanup_after_failure(mission, plan, result)
             except Exception:
@@ -15339,6 +15751,9 @@ class AjaxCore:
             result.artifacts = result.artifacts or {}
             if isinstance(result.artifacts, dict):
                 result.artifacts["mission_log"] = log_path
+        if str(result.error or "").strip().upper().startswith("BLOCKED_"):
+            mission.status = "BLOCKED"
+            return None
         # Mantener la misión viva para pursuit/replan (hasta agotar mission.max_attempts).
         mission.status = "IN_PROGRESS"
         return None
@@ -15711,6 +16126,40 @@ class AjaxCore:
                 return True
         return False
 
+    @staticmethod
+    def _is_reversible_action(action: str) -> bool:
+        reversible = {
+            "app.launch",
+            "window.focus",
+            "window.minimize",
+            "window.maximize",
+            "window.restore",
+            "window.move",
+            "window.resize",
+            "desktop.isolate_active_window",
+            "keyboard.type",
+            "keyboard.hotkey",
+            "mouse.click",
+            "mouse.move",
+        }
+        return str(action or "").strip() in reversible
+
+    def _tag_reversible_actions(self, plan: AjaxPlan) -> bool:
+        has_reversible = False
+        for st in plan.steps or []:
+            if not isinstance(st, dict):
+                continue
+            action = str(st.get("action") or "").strip()
+            reversible = self._is_reversible_action(action)
+            if reversible:
+                has_reversible = True
+            st["_microfilm_reversible"] = bool(reversible)
+        plan.metadata = plan.metadata or {}
+        plan.metadata["has_reversible_actions"] = has_reversible
+        if has_reversible and "reversible" not in plan.metadata:
+            plan.metadata["reversible"] = True
+        return has_reversible
+
     def _ask_user_and_wait(self, mission: MissionState, question: Optional[str]) -> None:
         mission.await_user_input = True
         mission.permission_question = question or mission.permission_question
@@ -15991,7 +16440,20 @@ class AjaxCore:
                     detail={"reason": "starting_xi_failed", "error": str(exc)[:200]},
                 )
             if preflight_res is not None:
-                mission.status = "BLOCKED_BY_MISSING_PLAYERS"
+                status_override = None
+                try:
+                    if isinstance(preflight_res.detail, dict):
+                        raw_status = preflight_res.detail.get("terminal_status")
+                        if isinstance(raw_status, str) and raw_status.strip():
+                            status_override = raw_status.strip().upper()
+                except Exception:
+                    status_override = None
+                if status_override in TERMINAL_STATES:
+                    mission.status = status_override
+                elif str(preflight_res.error or "").strip().upper().startswith("BLOCKED"):
+                    mission.status = "BLOCKED"
+                else:
+                    mission.status = "BLOCKED_BY_MISSING_PLAYERS"
                 mission.last_result = preflight_res
                 mission.last_mission_error = (
                     MissionError(

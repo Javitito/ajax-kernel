@@ -47,9 +47,16 @@ def _pid_running_windows(pid: int) -> bool:
 
 def _pid_running_wsl(pid: int) -> bool:
     """
-    In WSL, Windows-side processes are not visible to os.kill(pid, 0).
-    Check via Windows tooling instead.
+    In WSL we can have Linux and Windows processes.
+    - Linux PIDs are visible to os.kill(pid, 0)
+    - Windows PIDs are not, so we fallback to Windows tooling
     """
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        pass
+
     # Prefer tasklist.exe: cheap and doesn't require PowerShell parsing.
     try:
         proc = subprocess.run(

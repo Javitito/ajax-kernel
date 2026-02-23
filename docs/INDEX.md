@@ -7,6 +7,7 @@ Objetivo: repo minimo, legible y estable donde el chasis de AJAX se entiende en 
 - `AGENTS.md` (o `docs/AGENTS.md`): constitucion operativa (EFE fail-closed, PREPARE/APPLY/VERIFY/UNDO).
 - `docs/AJAX_SCI_KERNEL.md`: ciclo A-F.
 - `docs/AJAX_POLICY_CHALLENGE_LOOP.md`: solve -> LAB -> GAP.
+- `docs/PSEUDOCODE_DELTA_MICROFILM_LAB_20260220.md`: delta minimo de flujo/contratos para LAB bootstrap + microfilm.
 
 ## Directorios
 - `agency/`: nucleo (AjaxCore, verify/efe, gobernanza, provider policy).
