@@ -1,22 +1,89 @@
 {
+  "schema": "ajax.provider_policy.v1",
   "defaults": {
     "cooldowns": {
-      "429_tpm": 1800,
-      "bridge_error": 20,
       "quota_exhausted": 1800,
-      "timeout": 30
+      "429_tpm": 1800,
+      "timeout": 600,
+      "bridge_error": 20
+    },
+    "save_codex_exclude_prefixes": [
+      "codex_"
+    ]
+  },
+  "rails": {
+    "prod": {
+      "roles": {
+        "brain": {
+          "preference": [
+            "codex_brain",
+            "qwen_cloud",
+            "groq",
+            "gemini_cli"
+          ]
+        },
+        "council": {
+          "preference": [
+            "codex_brain",
+            "gemini_cli",
+            "qwen_cloud",
+            "groq"
+          ]
+        },
+        "scout": {
+          "preference": [
+            "gemini_cli",
+            "qwen_cloud",
+            "groq"
+          ]
+        },
+        "vision": {
+          "preference": [
+            "gemini_cli",
+            "codex_brain",
+            "qwen_cloud",
+            "groq"
+          ]
+        }
+      }
+    },
+    "lab": {
+      "roles": {
+        "brain": {
+          "preference": [
+            "codex_brain",
+            "qwen_cloud",
+            "groq",
+            "gemini_cli"
+          ]
+        },
+        "council": {
+          "preference": [
+            "codex_brain",
+            "gemini_cli",
+            "qwen_cloud",
+            "groq"
+          ]
+        },
+        "scout": {
+          "preference": [
+            "qwen_cloud",
+            "gemini_cli",
+            "groq"
+          ]
+        },
+        "vision": {
+          "preference": [
+            "gemini_cli",
+            "codex_brain",
+            "qwen_cloud",
+            "groq"
+          ]
+        }
+      }
     }
   },
   "providers": {
-    "codex_brain": {
-      "cost_class": "paid"
-    },
-    "gemini_cli": {
-      "cost_class": "generous"
-    },
-    "groq": {
-      "cost_class": "paid"
-    },
     "lmstudio": {
       "cost_class": "free",
       "policy_state_text": "disallowed"
@@ -26,92 +93,26 @@
       "policy_state_text": "disallowed",
       "policy_state_vision": "allowed"
     },
+    "groq": {
+      "cost_class": "paid"
+    },
     "qwen_cloud": {
       "cost_class": "generous",
       "rate_limits": {
+        "source": "manual_policy",
+        "status": "known_opaque_provider",
         "limits": {
           "rpm": 30,
           "tpm": 60000
         },
-        "note": "Conservative defaults; update if official docs appear.",
-        "source": "manual_policy",
-        "status": "known_opaque_provider"
-      }
-    }
-  },
-  "rails": {
-    "lab": {
-      "roles": {
-        "brain": {
-          "preference": [
-            "codex_brain",
-            "gemini_cli",
-            "qwen_cloud",
-            "groq"
-          ]
-        },
-        "council": {
-          "preference": [
-            "codex_brain",
-            "gemini_cli",
-            "qwen_cloud",
-            "groq"
-          ]
-        },
-        "scout": {
-          "preference": [
-            "codex_brain",
-            "gemini_cli",
-            "qwen_cloud",
-            "groq"
-          ]
-        },
-        "vision": {
-          "preference": [
-            "gemini_cli",
-            "codex_brain",
-            "qwen_cloud",
-            "groq"
-          ]
-        }
+        "note": "Conservative defaults; update if official docs appear."
       }
     },
-    "prod": {
-      "roles": {
-        "brain": {
-          "preference": [
-            "codex_brain",
-            "gemini_cli",
-            "qwen_cloud",
-            "groq"
-          ]
-        },
-        "council": {
-          "preference": [
-            "codex_brain",
-            "gemini_cli",
-            "qwen_cloud",
-            "groq"
-          ]
-        },
-        "scout": {
-          "preference": [
-            "codex_brain",
-            "gemini_cli",
-            "qwen_cloud",
-            "groq"
-          ]
-        },
-        "vision": {
-          "preference": [
-            "gemini_cli",
-            "codex_brain",
-            "qwen_cloud",
-            "groq"
-          ]
-        }
-      }
+    "gemini_cli": {
+      "cost_class": "generous"
+    },
+    "codex_brain": {
+      "cost_class": "paid"
     }
-  },
-  "schema": "ajax.provider_policy.v1"
+  }
 }

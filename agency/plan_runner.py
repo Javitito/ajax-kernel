@@ -36,6 +36,7 @@ import logging
 from agency.actuator import Actuator, Strategy, ActuatorError, create_default_actuator
 from agency.close_editor_safe import close_editor_safe, SAVE_DIALOG_TOKENS
 from agency.contract import AgencyJob
+from agency.experiment_cancellation import guard_gap_write_for_cancelled_experiment
 from agency.expected_state import ExpectedState, StateDelta, verify_efe
 from agency.windows_driver_client import (
     WindowsDriverClient,
@@ -538,6 +539,32 @@ def _emit_capability_gap(job: AgencyJob, step_results: List[StepResult], final_r
         if maybe_expected:
             gap["expected_state"] = maybe_expected
         out_path = gap_dir / f"{ts}_{job.job_id}.json"
+        root_dir = Path.cwd().resolve()
+        candidate_refs: List[Any] = [
+            (job.metadata or {}).get("experiment_id"),
+            (job.metadata or {}).get("mission_id"),
+            (job.metadata or {}).get("objective"),
+            job.job_id,
+            job.goal,
+            final_result.get("mission_id"),
+            final_result.get("error"),
+            final_result.get("summary"),
+        ]
+        redirected_path, guard_receipt, guarded_experiment_id, redirected = guard_gap_write_for_cancelled_experiment(
+            root_dir,
+            source="agency.plan_runner._emit_capability_gap",
+            proposed_path=out_path,
+            gap_payload=gap,
+            candidates=candidate_refs,
+        )
+        if redirected:
+            logging.getLogger(__name__).info(
+                "capability_gap_redirected_cancelled_experiment: experiment_id=%s path=%s receipt=%s",
+                guarded_experiment_id or "-",
+                redirected_path,
+                guard_receipt,
+            )
+            return
         out_path.write_text(json.dumps(gap, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
         logging.getLogger(__name__).warning("capability_gap_emit_failed", exc_info=True)

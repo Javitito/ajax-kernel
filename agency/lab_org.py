@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agency.experiment_cancellation import get_experiment_record, is_experiment_cancelled
 from agency.explore_policy import dummy_display_ok, evaluate_explore_state, load_explore_policy, state_rules
 from agency.human_permission import read_human_permission_status
 from agency.lab_control import LabStateStore
@@ -18,6 +19,12 @@ except Exception:  # pragma: no cover
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "config" / "lab_org_manifest.yaml"
 DEFAULT_EXPLORE_POLICY = ROOT / "config" / "explore_policy.yaml"
+MAINTENANCE_ALLOWLIST = (
+    "providers_probe",
+    "capabilities_refresh",
+    "doctor_*",
+    "health_*",
+)
 
 
 def _utc_now() -> str:
@@ -175,6 +182,21 @@ def _pick_next(due: List[Dict[str, Any]], last_job_ts: Dict[str, Any]) -> Option
     return sorted(due, key=key)[0]
 
 
+def _is_maintenance_job_kind(kind: str) -> bool:
+    normalized = str(kind or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"providers_probe", "capabilities_refresh"}:
+        return True
+    for prefix in ("doctor", "health"):
+        if normalized == prefix:
+            return True
+        for sep in ("_", "-", ":", "/", "."):
+            if normalized.startswith(f"{prefix}{sep}"):
+                return True
+    return False
+
+
 def lab_org_tick(
     root_dir: Path,
     *,
@@ -216,9 +238,14 @@ def lab_org_tick(
         "state": None,
         "trigger": None,
         "human_active": None,
+        "mode": "NORMAL",
+        "allowlist_used": [],
         "selected_job": None,
         "reason": None,
         "skipped_reason": None,
+        "experiment_id": None,
+        "cancelled_experiments_skipped": [],
+        "actionable_hint": None,
         "forced_non_ui_due": False,
         "last_job_ts": dict(last_job_ts),
         "enqueued": False,
@@ -232,6 +259,7 @@ def lab_org_tick(
     try:
         if not store.is_lab_org_running():
             receipt["skipped_reason"] = "lab_org_not_running"
+            receipt["actionable_hint"] = "Run: python bin/ajaxctl lab start"
             return receipt
 
         policy = load_explore_policy(root)
@@ -240,6 +268,9 @@ def lab_org_tick(
         receipt["state"] = explore_eval.get("state")
         receipt["trigger"] = explore_eval.get("trigger")
         receipt["human_active"] = bool(explore_eval.get("human_active"))
+        if receipt["human_active"]:
+            receipt["mode"] = "MAINTENANCE_ONLY"
+            receipt["allowlist_used"] = list(MAINTENANCE_ALLOWLIST)
 
         if receipt["trigger"] == "AWAY->HUMAN_DETECTED":
             cancelled = _preempt_lab_org_ui_jobs(root, store, reason="preempt_human_detected")
@@ -275,6 +306,12 @@ def lab_org_tick(
 
         state = str(receipt.get("state") or "HUMAN_DETECTED")
         if state == "HUMAN_DETECTED":
+            if receipt.get("human_active"):
+                due = [c for c in due if _is_maintenance_job_kind(str(c.get("job_kind") or ""))]
+                if not due:
+                    receipt["skipped_reason"] = "maintenance_only_no_due"
+                    receipt["reason"] = "maintenance_only_no_due"
+                    return receipt
             # Block UI intrusive by default while human detected.
             if not due:
                 receipt["skipped_reason"] = "no_due_jobs"
@@ -333,6 +370,31 @@ def lab_org_tick(
                     receipt["reason"] = "dummy_display_required"
                 return receipt
             due = filtered
+
+        non_cancelled_due: List[Dict[str, Any]] = []
+        cancelled_due: List[str] = []
+        for item in due:
+            experiment_id = str(item.get("id") or "").strip().upper()
+            if experiment_id and is_experiment_cancelled(root, experiment_id):
+                cancelled_due.append(experiment_id)
+                continue
+            non_cancelled_due.append(item)
+        if cancelled_due:
+            receipt["cancelled_experiments_skipped"] = sorted(set(cancelled_due))
+        due = non_cancelled_due
+        if not due:
+            if cancelled_due:
+                experiment_id = cancelled_due[0]
+                row = get_experiment_record(root, experiment_id) or {}
+                receipt["skipped_reason"] = "experiment_cancelled"
+                receipt["reason"] = "experiment_cancelled"
+                receipt["experiment_id"] = experiment_id
+                if row.get("reason"):
+                    receipt["actionable_hint"] = str(row.get("reason"))
+                return receipt
+            receipt["skipped_reason"] = "no_due_jobs"
+            receipt["reason"] = "no_due_jobs"
+            return receipt
 
         picked = _pick_next(due, last_job_ts)
         if not picked:

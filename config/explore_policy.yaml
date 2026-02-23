@@ -1,0 +1,13 @@
+policy:
+  human_active_threshold_s: 90
+  unknown_signal_as_human: true
+  require_dummy_display_ok: true
+states:
+  AWAY:
+    require_dummy_display_ok: true
+    force_non_ui_due: true
+  HUMAN_DETECTED:
+    allow_ui_intrusive_with_lease: false
+human_signal:
+  ps_script: scripts/ops/get_human_signal.ps1
+  timeout_s: 2.5

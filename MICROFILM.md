@@ -72,6 +72,16 @@ SESIÓN ÚNICA (usuario real)
 [RECEIPT] evidencia durable → LEANN
 ```
 
+### Microfilm Compliance v1 (fail-closed)
+Gates/hints ejecutables en runtime:
+1) `SSC`: si hay actuation y no existe `snapshot0` => `BLOCKED_SSC_MISSING`.
+2) `VERIFY before DONE`: no se cierra `DONE/COMPLETED` sin `verification.ok=true` => `BLOCKED_VERIFY_REQUIRED`.
+3) `LAB/PROD`: mismatch `rail/display_target/human_active` => `BLOCKED_RAIL_MISMATCH`.
+4) `Evidence tier`: `promote_trust=true` solo con `verification_mode=real` y driver online.
+5) `UNDO`: plan reversible sin undo => `BLOCKED_UNDO_REQUIRED`.
+
+Comando de auditoría: `python bin/ajaxctl microfilm check --root <AJAX_HOME>`.
+
 **Irreversibles:** dinero, borrados destructivos, envíos, cambios de credenciales/seguridad → **WAITING_FOR_USER** o **COUNCIL** por defecto.
 
 ---

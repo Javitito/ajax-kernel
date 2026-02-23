@@ -690,25 +690,113 @@ class LabWorker:
             "summary": "Driver health snapshot captured.",
         }
 
+    def _refresh_providers_status(self) -> Dict[str, Any]:
+        status_path = self.root_dir / "artifacts" / "health" / "providers_status.json"
+        now_ts = float(time.time())
+
+        def _fallback_touch(*, reason: str, error: Optional[str] = None) -> Dict[str, Any]:
+            doc: Dict[str, Any] = {}
+            try:
+                raw = json.loads(status_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    doc = raw
+            except Exception:
+                doc = {}
+            providers = doc.get("providers")
+            if not isinstance(providers, dict):
+                providers = {}
+            doc["schema"] = doc.get("schema") or "ajax.providers_status.v1"
+            doc["providers"] = providers
+            doc["updated_at"] = now_ts
+            doc["updated_ts"] = now_ts
+            doc["updated_utc"] = _utc_now()
+            meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
+            meta["last_refresh_source"] = "lab_worker.providers_probe"
+            meta["last_refresh_reason"] = reason
+            meta["last_refresh_ok"] = False
+            if error:
+                meta["last_refresh_error"] = str(error)[:240]
+            doc["meta"] = meta
+            _write_json(status_path, doc)
+            return {
+                "ok": False,
+                "path": str(status_path),
+                "updated_utc": doc.get("updated_utc"),
+                "error": reason,
+            }
+
+        try:
+            from agency.provider_breathing import ProviderBreathingLoop, _load_provider_configs
+        except Exception as exc:
+            return _fallback_touch(reason="provider_breathing_import_failed", error=str(exc))
+
+        try:
+            provider_cfg = _load_provider_configs(self.root_dir)
+            loop = ProviderBreathingLoop(root_dir=self.root_dir, provider_configs=provider_cfg)
+            status_doc = loop.run_once()
+        except Exception as exc:
+            return _fallback_touch(reason="provider_breathing_run_failed", error=str(exc))
+
+        if not isinstance(status_doc, dict):
+            return _fallback_touch(reason="provider_breathing_invalid_status_doc")
+
+        try:
+            updated_at = status_doc.get("updated_at")
+            try:
+                updated_ts = float(updated_at) if updated_at is not None else float(time.time())
+            except Exception:
+                updated_ts = float(time.time())
+            status_doc["updated_ts"] = updated_ts
+            status_doc["updated_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(updated_ts))
+            meta = status_doc.get("meta") if isinstance(status_doc.get("meta"), dict) else {}
+            meta["last_refresh_source"] = "lab_worker.providers_probe"
+            meta["last_refresh_reason"] = "provider_breathing_run_once"
+            meta["last_refresh_ok"] = True
+            status_doc["meta"] = meta
+            _write_json(status_path, status_doc)
+        except Exception as exc:
+            return _fallback_touch(reason="providers_status_write_failed", error=str(exc))
+
+        return {
+            "ok": True,
+            "path": str(status_path),
+            "updated_utc": status_doc.get("updated_utc"),
+            "error": None,
+        }
+
     def _execute_providers_probe(self, job: Dict[str, Any], path: Path) -> Dict[str, Any]:
+        status_refresh = self._refresh_providers_status()
+        evidence_refs = [str(status_refresh.get("path") or (self.root_dir / "artifacts" / "health" / "providers_status.json"))]
         try:
             ledger = ProviderLedger(root_dir=self.root_dir)
             doc = ledger.refresh(timeout_s=2.0)
             ledger_path = str(doc.get("path") or (self.root_dir / "artifacts" / "provider_ledger" / "latest.json"))
+            evidence_refs.append(ledger_path)
+            failure_codes = []
+            summary = "Provider status + ledger refreshed."
+            if not bool(status_refresh.get("ok")):
+                failure_codes.append("providers_status_refresh_fallback")
+                summary = (
+                    "Provider ledger refreshed; providers_status used fallback refresh "
+                    f"({status_refresh.get('error')})."
+                )
             return {
                 "outcome": "PASS",
                 "efe_pass": True,
-                "failure_codes": [],
-                "evidence_refs": [ledger_path],
+                "failure_codes": failure_codes,
+                "evidence_refs": evidence_refs,
                 "next_action": "noop",
-                "summary": "Provider ledger refreshed.",
+                "summary": summary,
             }
         except Exception as exc:
+            failure_codes = ["providers_probe_failed"]
+            if not bool(status_refresh.get("ok")):
+                failure_codes.append("providers_status_refresh_fallback")
             return {
                 "outcome": "FAIL",
                 "efe_pass": False,
-                "failure_codes": ["providers_probe_failed"],
-                "evidence_refs": [],
+                "failure_codes": failure_codes,
+                "evidence_refs": evidence_refs,
                 "next_action": "review_providers",
                 "summary": str(exc)[:200],
             }
