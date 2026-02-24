@@ -21,11 +21,28 @@ def _run_tx(*, root_dir: Path, run_id: Optional[str] = None, last: int = 1) -> D
     return run_tx_integrity_audit(root_dir, run_id=run_id, last=last)
 
 
+def _run_providers(
+    *,
+    root_dir: Path,
+    run_id: Optional[str] = None,
+    last: int = 1,
+) -> Dict[str, Any]:
+    from agency.audits.providers_survival_audit import run_providers_survival_audit  # type: ignore
+
+    _ = (run_id, last)  # unused for this audit; kept for generic runner signature compatibility
+    return run_providers_survival_audit(root_dir, mode="fast")
+
+
 _AUDIT_REGISTRY: Dict[str, AuditRegistration] = {
     "tx": AuditRegistration(
         name="tx",
         help="Transactional Integrity + Proof-Carrying Claims Audit (read-only sobre runs).",
         runner=_run_tx,
+    ),
+    "providers": AuditRegistration(
+        name="providers",
+        help="OPS Providers Survival Audit (read-only config/ledger/status/timeouts coherence).",
+        runner=_run_providers,
     ),
 }
 
