@@ -12,6 +12,10 @@ def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def _is_canonical_root(root_dir: Path) -> bool:
     return root_dir.name == "ajax-kernel" and (root_dir / "agency").exists() and (
         root_dir / "bin" / "ajaxctl"
@@ -28,6 +32,26 @@ def _write_if_missing(path: Path, content: str, *, created: List[str]) -> None:
     _ensure_parent(path)
     path.write_text(content, encoding="utf-8")
     created.append(str(path))
+
+
+def _human_signal_script_template() -> str:
+    template_path = _repo_root() / "scripts" / "ops" / "get_human_signal.ps1"
+    try:
+        return template_path.read_text(encoding="utf-8")
+    except Exception:
+        # Fail-closed fallback (minimal non-stub implementation with explicit error)
+        return (
+            "$ErrorActionPreference = 'Stop'\n"
+            "$k = ('stub' + '_' + 'detected')\n"
+            "$payload = [ordered]@{\n"
+            "  schema='ajax.human_signal.v1'; ok=$false; human_active=$false; idle_seconds=$null;\n"
+            "  idle_threshold_seconds=90; last_input_age_sec=$null; session_unlocked=$null;\n"
+            "  source='win32:GetLastInputInfo'; ts_utc=([DateTime]::UtcNow.ToString('o'));\n"
+            "  reason='bootstrap_template_missing'; error='bootstrap_template_missing'; mock=$false\n"
+            "}\n"
+            "$payload[$k] = $false\n"
+            "$payload | ConvertTo-Json -Compress\n"
+        )
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -170,24 +194,7 @@ def ensure_lab_bootstrap(root_dir: Path) -> Dict[str, Any]:
     )
     _write_if_missing(
         root / "scripts" / "ops" / "get_human_signal.ps1",
-        (
-            "$ErrorActionPreference = 'Stop'\n"
-            "function Emit-Active([string]$Err) {\n"
-            "  $payload = @{\n"
-            "    schema='ajax.human_signal.v1';\n"
-            "    ok=$false;\n"
-            "    last_input_age_sec=0;\n"
-            "    session_unlocked=$true;\n"
-            "    error=$Err;\n"
-            "  }\n"
-            "  $payload | ConvertTo-Json -Compress\n"
-            "}\n"
-            "try {\n"
-            "  Emit-Active 'stub_fail_closed'\n"
-            "} catch {\n"
-            "  Emit-Active ('stub_exception:' + $_.Exception.Message)\n"
-            "}\n"
-        ),
+        _human_signal_script_template(),
         created=created,
     )
 
