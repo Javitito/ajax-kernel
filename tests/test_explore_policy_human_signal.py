@@ -110,3 +110,56 @@ def test_human_signal_failure_mode_legacy_compat() -> None:
     assert human_signal_failure_mode(cfg_strict) == "strict"
     assert unknown_signal_as_human_policy(cfg_relaxed) is False
     assert unknown_signal_as_human_policy(cfg_strict) is True
+
+
+def test_background_lab_defaults_to_strict_when_mode_not_explicit(monkeypatch, tmp_path: Path) -> None:
+    _write_stub_signal_script(tmp_path)
+    lab_dir = tmp_path / "artifacts" / "lab"
+    lab_dir.mkdir(parents=True, exist_ok=True)
+    (lab_dir / "worker.pid").write_text("1234\n", encoding="utf-8")
+    cfg = {
+        "policy": {"human_active_threshold_s": 90, "unknown_signal_as_human": False},
+        "human_signal": {
+            "ps_script": "scripts/ops/get_human_signal.ps1",
+            "timeout_s": 1.0,
+        },
+    }
+
+    def _should_not_run(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("subprocess.run should not be called for stub-detected script")
+
+    monkeypatch.setattr(explore_policy.subprocess, "run", _should_not_run, raising=True)
+    state = evaluate_explore_state(tmp_path, policy=cfg)
+
+    assert state["state"] == "HUMAN_DETECTED"
+    assert state["human_signal_failure_mode"] == "strict"
+    assert state["human_signal_failure_mode_source"] == "background_default"
+    assert state["human_signal_failure_mode_reason"] == "lab_background_active"
+    assert state["human_signal"]["background_lab_active"] is True
+    assert state["human_signal"]["failure_mode"] == "strict"
+
+
+def test_background_default_does_not_override_explicit_relaxed(monkeypatch, tmp_path: Path) -> None:
+    _write_stub_signal_script(tmp_path)
+    lab_dir = tmp_path / "artifacts" / "lab"
+    lab_dir.mkdir(parents=True, exist_ok=True)
+    (lab_dir / "heartbeat.json").write_text('{"status":"RUNNING"}\n', encoding="utf-8")
+    cfg = {
+        "policy": {"human_active_threshold_s": 90, "unknown_signal_as_human": True},
+        "human_signal": {
+            "ps_script": "scripts/ops/get_human_signal.ps1",
+            "failure_mode": "relaxed",
+            "timeout_s": 1.0,
+        },
+    }
+
+    def _should_not_run(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("subprocess.run should not be called for stub-detected script")
+
+    monkeypatch.setattr(explore_policy.subprocess, "run", _should_not_run, raising=True)
+    state = evaluate_explore_state(tmp_path, policy=cfg)
+
+    assert state["state"] == "AWAY"
+    assert state["human_signal_failure_mode"] == "relaxed"
+    assert state["human_signal_failure_mode_source"] == "explicit_config"
+    assert state["human_signal"]["background_lab_active"] is True

@@ -238,6 +238,9 @@ def lab_org_tick(
         "state": None,
         "trigger": None,
         "human_active": None,
+        "human_signal_failure_mode": None,
+        "human_signal_failure_mode_source": None,
+        "human_signal_failure_mode_reason": None,
         "mode": "NORMAL",
         "allowlist_used": [],
         "selected_job": None,
@@ -268,6 +271,9 @@ def lab_org_tick(
         receipt["state"] = explore_eval.get("state")
         receipt["trigger"] = explore_eval.get("trigger")
         receipt["human_active"] = bool(explore_eval.get("human_active"))
+        receipt["human_signal_failure_mode"] = explore_eval.get("human_signal_failure_mode")
+        receipt["human_signal_failure_mode_source"] = explore_eval.get("human_signal_failure_mode_source")
+        receipt["human_signal_failure_mode_reason"] = explore_eval.get("human_signal_failure_mode_reason")
         if receipt["human_active"]:
             receipt["mode"] = "MAINTENANCE_ONLY"
             receipt["allowlist_used"] = list(MAINTENANCE_ALLOWLIST)

@@ -58,13 +58,26 @@ def state_rules(cfg: Dict[str, Any], state: str) -> Dict[str, Any]:
     return legacy if isinstance(legacy, dict) else {}
 
 
-def human_signal_failure_mode(cfg: Dict[str, Any]) -> str:
+def _lab_background_active(root_dir: Path) -> bool:
+    root = Path(root_dir)
+    pid_path = root / "artifacts" / "lab" / "worker.pid"
+    hb_path = root / "artifacts" / "lab" / "heartbeat.json"
+    if pid_path.exists():
+        return True
+    hb = _read_json(hb_path)
+    if isinstance(hb, dict) and str(hb.get("status") or "").strip():
+        return True
+    return False
+
+
+def human_signal_failure_mode_info(cfg: Dict[str, Any], *, root_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     Resolve explicit human-signal failure mode.
 
     Priority:
     1) human_signal.failure_mode / human_signal.mode in config
-    2) legacy policy.unknown_signal_as_human (True=>strict, False=>relaxed)
+    2) background LAB default => strict (night-safe)
+    3) legacy policy.unknown_signal_as_human (True=>strict, False=>relaxed)
     """
     signal_cfg = cfg.get("human_signal") if isinstance(cfg.get("human_signal"), dict) else {}
     raw = signal_cfg.get("failure_mode")
@@ -73,14 +86,40 @@ def human_signal_failure_mode(cfg: Dict[str, Any]) -> str:
     if isinstance(raw, str):
         mode = raw.strip().lower()
         if mode in {"strict", "relaxed"}:
-            return mode
+            return {
+                "mode": mode,
+                "source": "explicit_config",
+                "reason": "human_signal.failure_mode"
+                if signal_cfg.get("failure_mode") is not None
+                else "human_signal.mode",
+                "background_lab_active": bool(root_dir and _lab_background_active(Path(root_dir))),
+            }
+    background_active = bool(root_dir and _lab_background_active(Path(root_dir)))
+    if background_active:
+        return {
+            "mode": "strict",
+            "source": "background_default",
+            "reason": "lab_background_active",
+            "background_lab_active": True,
+        }
     pol = cfg.get("policy") if isinstance(cfg.get("policy"), dict) else {}
     legacy = bool(pol.get("unknown_signal_as_human", True))
-    return "strict" if legacy else "relaxed"
+    return {
+        "mode": "strict" if legacy else "relaxed",
+        "source": "legacy_policy",
+        "reason": "policy.unknown_signal_as_human",
+        "background_lab_active": background_active,
+    }
 
 
-def unknown_signal_as_human_policy(cfg: Dict[str, Any]) -> bool:
-    return human_signal_failure_mode(cfg) == "strict"
+def human_signal_failure_mode(cfg: Dict[str, Any], *, root_dir: Optional[Path] = None) -> str:
+    info = human_signal_failure_mode_info(cfg, root_dir=root_dir)
+    mode = str(info.get("mode") or "strict").strip().lower()
+    return mode if mode in {"strict", "relaxed"} else "strict"
+
+
+def unknown_signal_as_human_policy(cfg: Dict[str, Any], *, root_dir: Optional[Path] = None) -> bool:
+    return human_signal_failure_mode(cfg, root_dir=root_dir) == "strict"
 
 
 def _detect_human_signal_stub_script(script_path: Path) -> Dict[str, Any]:
@@ -137,7 +176,8 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
     """
     cfg = policy or load_explore_policy(root_dir)
     signal_cfg = cfg.get("human_signal") if isinstance(cfg.get("human_signal"), dict) else {}
-    failure_mode = human_signal_failure_mode(cfg)
+    mode_info = human_signal_failure_mode_info(cfg, root_dir=Path(root_dir))
+    failure_mode = str(mode_info.get("mode") or "strict")
     script_rel = signal_cfg.get("ps_script") or "scripts/ops/get_human_signal.ps1"
     script_path = (Path(root_dir) / str(script_rel)).resolve()
     try:
@@ -159,6 +199,9 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
             "command": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <script>",
         },
         "failure_mode": failure_mode,
+        "failure_mode_source": mode_info.get("source"),
+        "failure_mode_reason": mode_info.get("reason"),
+        "background_lab_active": bool(mode_info.get("background_lab_active")),
         "trusted": False,
         "reliability_reason": "not_checked",
     }
@@ -318,7 +361,8 @@ def evaluate_explore_state(
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = unknown_signal_as_human_policy(cfg)
+    mode_info = human_signal_failure_mode_info(cfg, root_dir=Path(root_dir))
+    unknown_as_human = str(mode_info.get("mode") or "strict") == "strict"
     signal = read_human_signal(root_dir, policy=cfg)
     active, reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     state = "HUMAN_DETECTED" if active else "AWAY"
@@ -334,6 +378,8 @@ def evaluate_explore_state(
         "trigger": trigger,
         "human_active": bool(active),
         "human_active_reason": reason,
-        "human_signal_failure_mode": human_signal_failure_mode(cfg),
+        "human_signal_failure_mode": mode_info.get("mode"),
+        "human_signal_failure_mode_source": mode_info.get("source"),
+        "human_signal_failure_mode_reason": mode_info.get("reason"),
         "human_signal": signal,
     }

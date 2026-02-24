@@ -104,7 +104,7 @@ def _compute_explore_state(root_dir: Path) -> Dict[str, Any]:
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = unknown_signal_as_human_policy(cfg)
+    unknown_as_human = unknown_signal_as_human_policy(cfg, root_dir=root_dir)
     signal = read_human_signal(root_dir, policy=cfg)
     active, reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     return {
@@ -188,7 +188,7 @@ def _read_human_active_signal(root_dir: Path) -> Dict[str, Any]:
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = unknown_signal_as_human_policy(cfg)
+    unknown_as_human = unknown_signal_as_human_policy(cfg, root_dir=root_dir)
     signal = read_human_signal(root_dir, policy=cfg)
     active, reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     return {
@@ -298,7 +298,7 @@ def _ui_policy_gate(root_dir: Path, *, job: Dict[str, Any], ui_intrusive: bool) 
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = unknown_signal_as_human_policy(cfg)
+    unknown_as_human = unknown_signal_as_human_policy(cfg, root_dir=root_dir)
     active, _reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     state = "HUMAN_DETECTED" if active else "AWAY"
 
