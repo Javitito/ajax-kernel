@@ -50,6 +50,7 @@ KNOWN_JOB_KINDS = {
     "snap_lab_silent",
     "capabilities_refresh",
     "providers_probe",
+    "providers_audit",
     "probe_ui",
     "probe_notepad",
     "probe_notepad_dummy",
@@ -72,8 +73,10 @@ def _episode_tags(job: Dict[str, Any], *, kind: str) -> list[str]:
         tags.append(f"display:{display_target}")
         if display_target == "dummy":
             tags.append("dummy")
-    if kind in {"providers_probe"}:
+    if kind in {"providers_probe", "providers_audit"}:
         tags.append("providers")
+    if kind == "providers_audit":
+        tags.extend(["audit", "read_only"])
     tags.append("safety")
     return tags
 
@@ -85,6 +88,8 @@ def _episode_hypothesis(kind: str) -> str:
         return "Expected driver /health and /capabilities to respond and be persisted as evidence."
     if kind == "providers_probe":
         return "Expected provider ledger refresh to succeed and produce a receipt path."
+    if kind == "providers_audit":
+        return "Expected read-only providers audit to emit artifacts and a safe remediation plan (without touching credentials)."
     if kind == "probe_notepad_dummy":
         return "Expected a dummy-display UI rehearsal to run only in AWAY and produce evidence."
     return "Expected LAB job to execute per job_kind contract."
@@ -391,6 +396,73 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         pass
 
 
+def _parse_json_stdout(stdout: str) -> Optional[Dict[str, Any]]:
+    raw = (stdout or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _providers_audit_texts(payload: Dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for key in ("summary", "recommendation", "next_action", "title", "code"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            texts.append(val.strip().lower())
+    return texts
+
+
+def _providers_audit_has_auth_quota_risk(audit_doc: Dict[str, Any]) -> bool:
+    keywords = ("auth", "quota", "credential", "login", "401", "403", "429", "token", "apikey")
+    findings = audit_doc.get("findings") if isinstance(audit_doc.get("findings"), list) else []
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        for text in _providers_audit_texts(item):
+            if any(k in text for k in keywords):
+                return True
+    recs = audit_doc.get("recommended_actions") if isinstance(audit_doc.get("recommended_actions"), list) else []
+    for item in recs:
+        if not isinstance(item, dict):
+            continue
+        for text in _providers_audit_texts(item):
+            if any(k in text for k in keywords):
+                return True
+    return False
+
+
+def _providers_audit_needs_refresh(audit_doc: Dict[str, Any]) -> bool:
+    refresh_codes = {
+        "policy_provider_missing_in_status",
+        "council_quorum_risk",
+        "timeouts_missing_p95_base",
+    }
+    findings = audit_doc.get("findings") if isinstance(audit_doc.get("findings"), list) else []
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip().lower()
+        if code in refresh_codes:
+            return True
+    return False
+
+
+def _providers_audit_collect_recommended_commands(audit_doc: Dict[str, Any]) -> list[str]:
+    cmds: list[str] = []
+    recs = audit_doc.get("recommended_actions") if isinstance(audit_doc.get("recommended_actions"), list) else []
+    for item in recs:
+        if not isinstance(item, dict):
+            continue
+        cmd = str(item.get("command") or "").strip()
+        if cmd:
+            cmds.append(cmd)
+    return cmds
+
+
 def _default_lab_action_executor_registry() -> Dict[str, Any]:
     """Builtin dispatch registry for LAB micro-jobs (default behavior)."""
     return {
@@ -407,6 +479,10 @@ def _default_lab_action_executor_registry() -> Dict[str, Any]:
             "providers_probe": {
                 "action_executor": "builtin.providers_probe.v1",
                 "handler": "_execute_providers_probe",
+            },
+            "providers_audit": {
+                "action_executor": "builtin.providers_audit.v1",
+                "handler": "_execute_providers_audit",
             },
             "probe_ui": {
                 "action_executor": "builtin.probe_ui.v1",
@@ -975,6 +1051,285 @@ class LabWorker:
                 "summary": str(exc)[:200],
             }
 
+    def _execute_providers_audit(self, job: Dict[str, Any], path: Path) -> Dict[str, Any]:
+        explore = _compute_explore_state(self.root_dir)
+        if str(explore.get("state") or "HUMAN_DETECTED") != "AWAY":
+            return {
+                "outcome": "BLOCKED",
+                "efe_pass": False,
+                "failure_codes": ["providers_audit_away_only", "human_detected"],
+                "evidence_refs": [],
+                "next_action": "wait_for_away",
+                "summary": "providers_audit is AWAY-only and was blocked by human detection.",
+            }
+
+        job_id = str(job.get("job_id") or "job")
+        evidence_dir = self._ensure_evidence_dir(job_id)
+        ts_label = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        plan_path = evidence_dir / f"providers_audit_plan_{ts_label}.json"
+        outcome_path = evidence_dir / f"providers_audit_outcome_{ts_label}.json"
+        ajaxctl_path = str((self.root_dir / "bin" / "ajaxctl").resolve())
+        audit_cmd = [
+            sys.executable,
+            ajaxctl_path,
+            "audit",
+            "providers",
+            "--root",
+            str(self.root_dir),
+            "--json",
+        ]
+        try:
+            audit_proc = subprocess.run(
+                audit_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60.0,
+                check=False,
+            )
+        except Exception as exc:
+            return {
+                "outcome": "FAIL",
+                "efe_pass": False,
+                "failure_codes": ["providers_audit_exec_failed"],
+                "evidence_refs": [],
+                "next_action": "review_providers_audit_job",
+                "summary": str(exc)[:200],
+            }
+
+        audit_doc = _parse_json_stdout(audit_proc.stdout or "")
+        if audit_proc.returncode not in {0, 2} or not isinstance(audit_doc, dict):
+            _write_json(
+                outcome_path,
+                {
+                    "schema": "ajax.lab.providers_audit_outcome.v1",
+                    "ts_utc": _utc_now(),
+                    "job_id": job_id,
+                    "audit_command": audit_cmd,
+                    "audit_returncode": int(audit_proc.returncode),
+                    "audit_stdout": (audit_proc.stdout or "")[:2000],
+                    "audit_stderr": (audit_proc.stderr or "")[:2000],
+                    "ok": False,
+                    "reason": "audit_failed_or_invalid_json",
+                },
+            )
+            return {
+                "outcome": "FAIL",
+                "efe_pass": False,
+                "failure_codes": ["providers_audit_failed"],
+                "evidence_refs": [str(outcome_path)],
+                "next_action": "review_providers_audit_job",
+                "summary": f"providers audit failed (rc={audit_proc.returncode}) or returned non-JSON output.",
+            }
+
+        findings = audit_doc.get("findings") if isinstance(audit_doc.get("findings"), list) else []
+        auth_quota_sensitive = _providers_audit_has_auth_quota_risk(audit_doc)
+        needs_refresh = _providers_audit_needs_refresh(audit_doc)
+        recommended_cmds = _providers_audit_collect_recommended_commands(audit_doc)
+
+        planned_actions: list[Dict[str, Any]] = []
+        blocked_actions: list[Dict[str, Any]] = []
+        checklist: list[str] = []
+        if auth_quota_sensitive:
+            blocked_actions.append(
+                {
+                    "kind": "auth_quota_sensitive",
+                    "reason": "auth_or_quota_finding_detected",
+                    "safe": False,
+                }
+            )
+            checklist.extend(
+                [
+                    "Review providers audit findings for auth/quota failures.",
+                    "Run `python bin/ajaxctl doctor providers` manually after credentials/quota are verified.",
+                    "Do not perform login/credential changes from LAB micro-jobs.",
+                ]
+            )
+        else:
+            if needs_refresh:
+                planned_actions.append(
+                    {
+                        "kind": "providers_probe_refresh",
+                        "safe": True,
+                        "executor": "builtin.providers_probe.v1",
+                        "command": "internal:_execute_providers_probe",
+                    }
+                )
+            if any(cmd.strip().startswith("python bin/ajaxctl doctor providers") for cmd in recommended_cmds):
+                planned_actions.append(
+                    {
+                        "kind": "doctor_providers",
+                        "safe": True,
+                        "executor": "cli",
+                        "command": "python bin/ajaxctl doctor providers",
+                    }
+                )
+
+        expected_state = {
+            "audit_invoked": True,
+            "audit_returncode_in": [0, 2],
+            "audit_artifact_or_receipt_present": True,
+            "no_credential_or_login_actions_executed": True,
+            "safe_actions_only_from_allowlist": True,
+            "plan_and_outcome_artifacts_written": True,
+        }
+        plan_payload = {
+            "schema": "ajax.lab.providers_audit_plan.v1",
+            "ts_utc": _utc_now(),
+            "job_id": job_id,
+            "job_kind": "providers_audit",
+            "audit": {
+                "command": audit_cmd,
+                "returncode": int(audit_proc.returncode),
+                "ok_field": bool(audit_doc.get("ok")),
+                "artifact_path": audit_doc.get("artifact_path"),
+                "artifact_md_path": audit_doc.get("artifact_md_path"),
+                "receipt_path": audit_doc.get("receipt_path"),
+            },
+            "findings_summary": {
+                "count": len(findings),
+                "summary": audit_doc.get("summary"),
+            },
+            "auth_quota_sensitive": auth_quota_sensitive,
+            "needs_refresh": needs_refresh,
+            "recommended_commands": recommended_cmds,
+            "planned_actions": planned_actions,
+            "blocked_actions": blocked_actions,
+            "checklist": checklist,
+            "expected_state": expected_state,
+        }
+        _write_json(plan_path, plan_payload)
+
+        evidence_refs: list[str] = [str(plan_path)]
+        for key in ("artifact_path", "artifact_md_path", "receipt_path"):
+            val = audit_doc.get(key)
+            if isinstance(val, str) and val:
+                evidence_refs.append(val)
+
+        executed_actions: list[Dict[str, Any]] = []
+        safe_action_failed = False
+        for action in planned_actions:
+            kind = str(action.get("kind") or "")
+            if kind == "providers_probe_refresh":
+                probe_result = self._execute_providers_probe(job, path)
+                ok = bool(probe_result.get("efe_pass"))
+                if not ok:
+                    safe_action_failed = True
+                for ref in list(probe_result.get("evidence_refs") or []):
+                    if isinstance(ref, str) and ref:
+                        evidence_refs.append(ref)
+                executed_actions.append(
+                    {
+                        "kind": kind,
+                        "safe": True,
+                        "ok": ok,
+                        "outcome": probe_result.get("outcome"),
+                        "failure_codes": list(probe_result.get("failure_codes") or []),
+                        "summary": probe_result.get("summary"),
+                        "evidence_refs": list(probe_result.get("evidence_refs") or []),
+                    }
+                )
+                continue
+            if kind == "doctor_providers":
+                doctor_cmd = [sys.executable, ajaxctl_path, "doctor", "providers"]
+                try:
+                    doctor_proc = subprocess.run(
+                        doctor_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=45.0,
+                        check=False,
+                    )
+                    doctor_doc = _parse_json_stdout(doctor_proc.stdout or "")
+                    doctor_artifact = doctor_doc.get("artifact") if isinstance(doctor_doc, dict) else None
+                    doctor_ok = doctor_proc.returncode in {0, 1}
+                    if not doctor_ok:
+                        safe_action_failed = True
+                    if isinstance(doctor_artifact, str) and doctor_artifact:
+                        evidence_refs.append(doctor_artifact)
+                    executed_actions.append(
+                        {
+                            "kind": kind,
+                            "safe": True,
+                            "ok": doctor_ok,
+                            "returncode": int(doctor_proc.returncode),
+                            "artifact": doctor_artifact,
+                            "stdout": (doctor_proc.stdout or "")[:1000],
+                            "stderr": (doctor_proc.stderr or "")[:1000],
+                        }
+                    )
+                except Exception as exc:
+                    safe_action_failed = True
+                    executed_actions.append(
+                        {
+                            "kind": kind,
+                            "safe": True,
+                            "ok": False,
+                            "error": str(exc)[:200],
+                        }
+                    )
+                continue
+
+        # preserve insertion order while de-duplicating evidence refs
+        evidence_refs = list(dict.fromkeys([ref for ref in evidence_refs if isinstance(ref, str) and ref]))
+        outcome_payload = {
+            "schema": "ajax.lab.providers_audit_outcome.v1",
+            "ts_utc": _utc_now(),
+            "job_id": job_id,
+            "job_kind": "providers_audit",
+            "audit_returncode": int(audit_proc.returncode),
+            "auth_quota_sensitive": auth_quota_sensitive,
+            "checklist_only": bool(auth_quota_sensitive and not planned_actions),
+            "planned_actions": planned_actions,
+            "blocked_actions": blocked_actions,
+            "executed_actions": executed_actions,
+            "checklist": checklist,
+            "evidence_refs": evidence_refs,
+            "expected_state": expected_state,
+        }
+        _write_json(outcome_path, outcome_payload)
+        evidence_refs.append(str(outcome_path))
+        evidence_refs = list(dict.fromkeys(evidence_refs))
+
+        findings_present = int(audit_proc.returncode) == 2
+        if safe_action_failed:
+            return {
+                "outcome": "FAIL",
+                "efe_pass": False,
+                "failure_codes": ["providers_audit_safe_action_failed"],
+                "evidence_refs": evidence_refs,
+                "next_action": "review_providers_audit_plan",
+                "summary": "Providers audit ran, but a safe remediation action failed.",
+                "recommended_actions": planned_actions,
+                "providers_audit_plan_path": str(plan_path),
+                "providers_audit_outcome_path": str(outcome_path),
+            }
+
+        failure_codes = ["providers_audit_findings_present"] if findings_present else []
+        next_action = "noop"
+        if findings_present:
+            next_action = "review_providers_audit_plan"
+        if auth_quota_sensitive:
+            next_action = "ask_user_auth_quota"
+        summary = "Providers audit completed without findings."
+        if findings_present and auth_quota_sensitive:
+            summary = "Providers audit found auth/quota-sensitive issues; checklist generated (no credential actions executed)."
+        elif findings_present and planned_actions:
+            summary = "Providers audit found issues; safe remediation actions were executed and documented."
+        elif findings_present:
+            summary = "Providers audit found issues; remediation plan/checklist was recorded."
+        return {
+            "outcome": "PASS",
+            "efe_pass": True,
+            "failure_codes": failure_codes,
+            "evidence_refs": evidence_refs,
+            "next_action": next_action,
+            "summary": summary,
+            "recommended_actions": planned_actions,
+            "providers_audit_plan_path": str(plan_path),
+            "providers_audit_outcome_path": str(outcome_path),
+            "checklist_only": bool(auth_quota_sensitive and not planned_actions),
+        }
+
     def _execute_probe_ui(self, job: Dict[str, Any], path: Path) -> Dict[str, Any]:
         gate = _ui_policy_gate(self.root_dir, job=job, ui_intrusive=True)
         if gate:
@@ -1283,7 +1638,7 @@ class LabWorker:
             kind = "probe_notepad"
         if kind == "snap_lab_silent":
             kind = "snap_lab"
-        if kind in {"snap_lab", "capabilities_refresh", "providers_probe", "probe_ui", "probe_notepad"}:
+        if kind in {"snap_lab", "capabilities_refresh", "providers_probe", "providers_audit", "probe_ui", "probe_notepad"}:
             resolved = self._resolve_action_executor(kind)
             if not bool(resolved.get("ok")):
                 label = kind or "unknown"
