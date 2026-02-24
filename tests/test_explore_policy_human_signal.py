@@ -163,3 +163,33 @@ def test_background_default_does_not_override_explicit_relaxed(monkeypatch, tmp_
     assert state["human_signal_failure_mode"] == "relaxed"
     assert state["human_signal_failure_mode_source"] == "explicit_config"
     assert state["human_signal"]["background_lab_active"] is True
+
+
+def test_evaluate_explore_state_logs_signal_ok_idle_source(monkeypatch, tmp_path: Path) -> None:
+    cfg = {
+        "policy": {"human_active_threshold_s": 90, "unknown_signal_as_human": True},
+        "human_signal": {"ps_script": "scripts/ops/get_human_signal.ps1", "failure_mode": "strict"},
+    }
+
+    monkeypatch.setattr(
+        explore_policy,
+        "read_human_signal",
+        lambda root_dir, policy=None: {
+            "ok": True,
+            "idle_seconds": 12.0,
+            "idle_threshold_seconds": 90.0,
+            "last_input_age_sec": 12.0,
+            "session_unlocked": True,
+            "human_active": True,
+            "source": "win32:GetLastInputInfo",
+            "ts_utc": "2026-02-24T00:00:00Z",
+        },
+        raising=True,
+    )
+
+    state = evaluate_explore_state(tmp_path, policy=cfg)
+
+    assert state["human_signal_failure_mode"] == "strict"
+    assert state["human_signal_ok"] is True
+    assert float(state["human_signal_idle_seconds"]) == 12.0
+    assert state["human_signal_source"] == "win32:GetLastInputInfo"

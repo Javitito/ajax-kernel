@@ -188,8 +188,13 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
     payload: Dict[str, Any] = {
         "schema": "ajax.human_signal.v1",
         "ok": False,
+        "human_active": None,
+        "idle_seconds": None,
+        "idle_threshold_seconds": None,
         "last_input_age_sec": None,
         "session_unlocked": None,
+        "source": None,
+        "reason": None,
         "error": None,
         "ts_utc": _utc_now(),
         "probe": {
@@ -314,12 +319,21 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
             return payload
 
     payload["ok"] = bool(data.get("ok", True))
-    payload["last_input_age_sec"] = data.get("last_input_age_sec")
+    payload["human_active"] = data.get("human_active") if isinstance(data.get("human_active"), bool) else None
+    payload["idle_seconds"] = data.get("idle_seconds")
+    payload["idle_threshold_seconds"] = data.get("idle_threshold_seconds")
+    payload["last_input_age_sec"] = (
+        data.get("last_input_age_sec") if data.get("last_input_age_sec") is not None else data.get("idle_seconds")
+    )
     payload["session_unlocked"] = data.get("session_unlocked")
+    payload["source"] = data.get("source")
+    payload["reason"] = data.get("reason")
     payload["trusted"] = bool(payload.get("ok"))
     payload["reliability_reason"] = "probe_ok" if bool(payload.get("ok")) else "probe_reported_not_ok"
     if data.get("error"):
         payload["error"] = str(data.get("error"))[:200]
+    elif data.get("reason"):
+        payload["error"] = str(data.get("reason"))[:200]
     return payload
 
 
@@ -381,5 +395,8 @@ def evaluate_explore_state(
         "human_signal_failure_mode": mode_info.get("mode"),
         "human_signal_failure_mode_source": mode_info.get("source"),
         "human_signal_failure_mode_reason": mode_info.get("reason"),
+        "human_signal_ok": signal.get("ok"),
+        "human_signal_idle_seconds": signal.get("idle_seconds"),
+        "human_signal_source": signal.get("source"),
         "human_signal": signal,
     }
