@@ -146,3 +146,32 @@ def test_human_detected_nothing_due_returns_maintenance_only_no_due(monkeypatch,
     assert receipt.get("enqueued") is False
     assert receipt.get("skipped_reason") == "maintenance_only_no_due"
     assert receipt.get("reason") == "maintenance_only_no_due"
+
+
+def test_lab_org_receipt_carries_human_signal_mode_metadata(monkeypatch, tmp_path: Path) -> None:
+    root = _setup_running_root(tmp_path)
+    manifest = root / "config" / "lab_org_manifest_test.json"
+    _write_manifest(manifest, [])
+
+    monkeypatch.setattr(
+        lab_org_mod,
+        "evaluate_explore_state",
+        lambda root, policy, prev_state=None, now_ts=None: {
+            "schema": "ajax.explore_state.v1",
+            "state": "HUMAN_DETECTED",
+            "trigger": None,
+            "human_active": True,
+            "human_active_reason": "signal_not_ok",
+            "human_signal_failure_mode": "strict",
+            "human_signal_failure_mode_source": "background_default",
+            "human_signal_failure_mode_reason": "lab_background_active",
+        },
+        raising=True,
+    )
+
+    receipt = lab_org_tick(root, manifest_path=manifest)
+
+    assert receipt.get("human_signal_failure_mode") == "strict"
+    assert receipt.get("human_signal_failure_mode_source") == "background_default"
+    assert receipt.get("human_signal_failure_mode_reason") == "lab_background_active"
+    assert receipt.get("mode") == "MAINTENANCE_ONLY"
