@@ -163,6 +163,7 @@ def ensure_lab_bootstrap(root_dir: Path) -> Dict[str, Any]:
             "    allow_ui_intrusive_with_lease: false\n"
             "human_signal:\n"
             "  ps_script: scripts/ops/get_human_signal.ps1\n"
+            "  failure_mode: strict\n"
             "  timeout_s: 2.5\n"
         ),
         created=created,
@@ -209,4 +210,3 @@ def ensure_lab_bootstrap(root_dir: Path) -> Dict[str, Any]:
             "python bin/ajaxctl microfilm check --root <AJAX_HOME>",
         ],
     }
-

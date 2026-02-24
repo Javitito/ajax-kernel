@@ -58,6 +58,54 @@ def state_rules(cfg: Dict[str, Any], state: str) -> Dict[str, Any]:
     return legacy if isinstance(legacy, dict) else {}
 
 
+def human_signal_failure_mode(cfg: Dict[str, Any]) -> str:
+    """
+    Resolve explicit human-signal failure mode.
+
+    Priority:
+    1) human_signal.failure_mode / human_signal.mode in config
+    2) legacy policy.unknown_signal_as_human (True=>strict, False=>relaxed)
+    """
+    signal_cfg = cfg.get("human_signal") if isinstance(cfg.get("human_signal"), dict) else {}
+    raw = signal_cfg.get("failure_mode")
+    if raw is None:
+        raw = signal_cfg.get("mode")
+    if isinstance(raw, str):
+        mode = raw.strip().lower()
+        if mode in {"strict", "relaxed"}:
+            return mode
+    pol = cfg.get("policy") if isinstance(cfg.get("policy"), dict) else {}
+    legacy = bool(pol.get("unknown_signal_as_human", True))
+    return "strict" if legacy else "relaxed"
+
+
+def unknown_signal_as_human_policy(cfg: Dict[str, Any]) -> bool:
+    return human_signal_failure_mode(cfg) == "strict"
+
+
+def _detect_human_signal_stub_script(script_path: Path) -> Dict[str, Any]:
+    """
+    Detect bootstrap stub markers in the PowerShell human-signal script.
+
+    A script containing stub branches is not considered a reliable signal source.
+    """
+    out: Dict[str, Any] = {"stub_detected": False, "markers": [], "reason": None}
+    try:
+        text = script_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return out
+    lowered = text.lower()
+    markers = []
+    for token in ("stub_fail_closed", "stub_exception", "stub_"):
+        if token in lowered:
+            markers.append(token)
+    if markers:
+        out["stub_detected"] = True
+        out["markers"] = sorted(set(markers))
+        out["reason"] = "stub_script_detected"
+    return out
+
+
 def _latest_display_probe_receipt(root_dir: Path) -> Optional[Dict[str, Any]]:
     base = Path(root_dir) / "artifacts" / "ops" / "display_probe"
     if not base.exists():
@@ -89,6 +137,7 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
     """
     cfg = policy or load_explore_policy(root_dir)
     signal_cfg = cfg.get("human_signal") if isinstance(cfg.get("human_signal"), dict) else {}
+    failure_mode = human_signal_failure_mode(cfg)
     script_rel = signal_cfg.get("ps_script") or "scripts/ops/get_human_signal.ps1"
     script_path = (Path(root_dir) / str(script_rel)).resolve()
     try:
@@ -109,10 +158,25 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
             "timeout_s": timeout_s,
             "command": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <script>",
         },
+        "failure_mode": failure_mode,
+        "trusted": False,
+        "reliability_reason": "not_checked",
     }
 
     if not script_path.exists():
         payload["error"] = "human_signal_script_missing"
+        payload["reliability_reason"] = "script_missing"
+        return payload
+
+    stub_info = _detect_human_signal_stub_script(script_path)
+    probe_meta = payload.get("probe") if isinstance(payload.get("probe"), dict) else {}
+    probe_meta["stub_detected"] = bool(stub_info.get("stub_detected"))
+    probe_meta["stub_markers"] = list(stub_info.get("markers") or [])
+    payload["probe"] = probe_meta
+    if bool(stub_info.get("stub_detected")):
+        payload["error"] = "human_signal_untrusted:stub_script_detected"
+        payload["trusted"] = False
+        payload["reliability_reason"] = "stub_script_detected"
         return payload
 
     def _to_windows_path(posix_path: str) -> Optional[str]:
@@ -181,6 +245,7 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
         )
     except Exception as exc:
         payload["error"] = f"human_signal_probe_failed:{str(exc)[:160]}"
+        payload["reliability_reason"] = "probe_failed"
         return payload
 
     stdout_b = proc.stdout or b""
@@ -191,6 +256,7 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
         payload["error"] = f"human_signal_rc_{proc.returncode}:{(stderr_u8 or stdout_u8)[:160]}"
         payload["probe"]["stderr_excerpt"] = stderr_u8[:200]
         payload["probe"]["stdout_excerpt"] = stdout_u8[:200]
+        payload["reliability_reason"] = "probe_rc_nonzero"
         return payload
 
     data = _parse_json_from_text(stdout_u8)
@@ -201,11 +267,14 @@ def read_human_signal(root_dir: Path, *, policy: Optional[Dict[str, Any]] = None
             payload["error"] = f"human_signal_json_parse_failed:{stdout_u8[:160] or '<empty>'}"
             payload["probe"]["stdout_excerpt"] = stdout_u8[:200]
             payload["probe"]["stderr_excerpt"] = stderr_u8[:200]
+            payload["reliability_reason"] = "json_parse_failed"
             return payload
 
     payload["ok"] = bool(data.get("ok", True))
     payload["last_input_age_sec"] = data.get("last_input_age_sec")
     payload["session_unlocked"] = data.get("session_unlocked")
+    payload["trusted"] = bool(payload.get("ok"))
+    payload["reliability_reason"] = "probe_ok" if bool(payload.get("ok")) else "probe_reported_not_ok"
     if data.get("error"):
         payload["error"] = str(data.get("error"))[:200]
     return payload
@@ -249,7 +318,7 @@ def evaluate_explore_state(
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = bool(pol.get("unknown_signal_as_human", True))
+    unknown_as_human = unknown_signal_as_human_policy(cfg)
     signal = read_human_signal(root_dir, policy=cfg)
     active, reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     state = "HUMAN_DETECTED" if active else "AWAY"
@@ -265,5 +334,6 @@ def evaluate_explore_state(
         "trigger": trigger,
         "human_active": bool(active),
         "human_active_reason": reason,
+        "human_signal_failure_mode": human_signal_failure_mode(cfg),
         "human_signal": signal,
     }
