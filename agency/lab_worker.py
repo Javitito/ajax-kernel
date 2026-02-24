@@ -463,6 +463,81 @@ def _providers_audit_collect_recommended_commands(audit_doc: Dict[str, Any]) -> 
     return cmds
 
 
+def _providers_audit_summary_counts(audit_doc: Dict[str, Any]) -> Dict[str, int]:
+    summary = audit_doc.get("summary") if isinstance(audit_doc.get("summary"), dict) else {}
+
+    def _as_int(name: str) -> int:
+        try:
+            return max(0, int(summary.get(name) or 0))
+        except Exception:
+            return 0
+
+    return {
+        "critical": _as_int("critical"),
+        "error": _as_int("error"),
+        "warn": _as_int("warn"),
+        "info": _as_int("info"),
+    }
+
+
+def _providers_audit_finding_code_counts(audit_doc: Dict[str, Any]) -> Dict[str, int]:
+    findings = audit_doc.get("findings") if isinstance(audit_doc.get("findings"), list) else []
+    out: Dict[str, int] = {}
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip().lower()
+        if not code:
+            continue
+        out[code] = int(out.get(code, 0)) + 1
+    return out
+
+
+def _providers_audit_compare(before_doc: Dict[str, Any], after_doc: Dict[str, Any]) -> Dict[str, Any]:
+    before_counts = _providers_audit_summary_counts(before_doc)
+    after_counts = _providers_audit_summary_counts(after_doc)
+    delta_counts = {
+        key: int(after_counts.get(key, 0)) - int(before_counts.get(key, 0))
+        for key in ("critical", "error", "warn", "info")
+    }
+    before_codes = _providers_audit_finding_code_counts(before_doc)
+    after_codes = _providers_audit_finding_code_counts(after_doc)
+    tracked_codes = ("policy_provider_missing_in_status", "council_quorum_risk")
+    tracked_before = {code: int(before_codes.get(code, 0)) for code in tracked_codes}
+    tracked_after = {code: int(after_codes.get(code, 0)) for code in tracked_codes}
+    tracked_delta = {code: tracked_after[code] - tracked_before[code] for code in tracked_codes}
+
+    improvement_reasons: list[str] = []
+    if after_counts["critical"] < before_counts["critical"]:
+        improvement_reasons.append("critical_reduced")
+    if after_counts["error"] < before_counts["error"]:
+        improvement_reasons.append("error_reduced")
+    if after_counts["warn"] < before_counts["warn"]:
+        improvement_reasons.append("warn_reduced")
+    if sum(tracked_after.values()) < sum(tracked_before.values()):
+        improvement_reasons.append("brain_quorum_risk_reduced")
+    if sum(tracked_before.values()) > 0 and sum(tracked_after.values()) == 0:
+        improvement_reasons.append("brain_quorum_ok_after_reaudit")
+    if sum(after_counts.values()) == 0 and sum(before_counts.values()) > 0:
+        improvement_reasons.append("reaudit_clean")
+
+    improved_enough = bool(improvement_reasons)
+    return {
+        "before_counts": before_counts,
+        "after_counts": after_counts,
+        "delta_counts": delta_counts,
+        "before_code_counts": before_codes,
+        "after_code_counts": after_codes,
+        "tracked_codes": {
+            "before": tracked_before,
+            "after": tracked_after,
+            "delta": tracked_delta,
+        },
+        "improved_enough": improved_enough,
+        "improvement_reasons": improvement_reasons,
+    }
+
+
 def _default_lab_action_executor_registry() -> Dict[str, Any]:
     """Builtin dispatch registry for LAB micro-jobs (default behavior)."""
     return {
@@ -1068,6 +1143,7 @@ class LabWorker:
         ts_label = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         plan_path = evidence_dir / f"providers_audit_plan_{ts_label}.json"
         outcome_path = evidence_dir / f"providers_audit_outcome_{ts_label}.json"
+        reaudit_path = evidence_dir / f"providers_audit_reaudit_{ts_label}.json"
         ajaxctl_path = str((self.root_dir / "bin" / "ajaxctl").resolve())
         audit_cmd = [
             sys.executable,
@@ -1078,38 +1154,65 @@ class LabWorker:
             str(self.root_dir),
             "--json",
         ]
-        try:
-            audit_proc = subprocess.run(
-                audit_cmd,
-                capture_output=True,
-                text=True,
-                timeout=60.0,
-                check=False,
-            )
-        except Exception as exc:
+
+        def _run_audit_stage(stage: str) -> Dict[str, Any]:
+            try:
+                proc = subprocess.run(
+                    audit_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60.0,
+                    check=False,
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "stage": stage,
+                    "error": f"exec_failed:{str(exc)[:200]}",
+                    "returncode": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "doc": None,
+                    "command": list(audit_cmd),
+                }
+            doc = _parse_json_stdout(proc.stdout or "")
+            if proc.returncode not in {0, 2} or not isinstance(doc, dict):
+                return {
+                    "ok": False,
+                    "stage": stage,
+                    "error": "invalid_json_or_returncode",
+                    "returncode": int(proc.returncode),
+                    "stdout": (proc.stdout or "")[:2000],
+                    "stderr": (proc.stderr or "")[:2000],
+                    "doc": None,
+                    "command": list(audit_cmd),
+                }
             return {
-                "outcome": "FAIL",
-                "efe_pass": False,
-                "failure_codes": ["providers_audit_exec_failed"],
-                "evidence_refs": [],
-                "next_action": "review_providers_audit_job",
-                "summary": str(exc)[:200],
+                "ok": True,
+                "stage": stage,
+                "error": None,
+                "returncode": int(proc.returncode),
+                "stdout": (proc.stdout or "")[:2000],
+                "stderr": (proc.stderr or "")[:2000],
+                "doc": doc,
+                "command": list(audit_cmd),
             }
 
-        audit_doc = _parse_json_stdout(audit_proc.stdout or "")
-        if audit_proc.returncode not in {0, 2} or not isinstance(audit_doc, dict):
+        audit_stage = _run_audit_stage("initial_audit")
+        if not bool(audit_stage.get("ok")):
             _write_json(
                 outcome_path,
                 {
                     "schema": "ajax.lab.providers_audit_outcome.v1",
                     "ts_utc": _utc_now(),
                     "job_id": job_id,
+                    "stage": "initial_audit",
                     "audit_command": audit_cmd,
-                    "audit_returncode": int(audit_proc.returncode),
-                    "audit_stdout": (audit_proc.stdout or "")[:2000],
-                    "audit_stderr": (audit_proc.stderr or "")[:2000],
+                    "audit_returncode": audit_stage.get("returncode"),
+                    "audit_stdout": audit_stage.get("stdout"),
+                    "audit_stderr": audit_stage.get("stderr"),
                     "ok": False,
-                    "reason": "audit_failed_or_invalid_json",
+                    "reason": str(audit_stage.get("error") or "audit_failed_or_invalid_json"),
                 },
             )
             return {
@@ -1118,13 +1221,16 @@ class LabWorker:
                 "failure_codes": ["providers_audit_failed"],
                 "evidence_refs": [str(outcome_path)],
                 "next_action": "review_providers_audit_job",
-                "summary": f"providers audit failed (rc={audit_proc.returncode}) or returned non-JSON output.",
+                "summary": f"providers audit failed ({audit_stage.get('error')}).",
             }
 
+        audit_proc_returncode = int(audit_stage.get("returncode") or 0)
+        audit_doc = audit_stage["doc"]
         findings = audit_doc.get("findings") if isinstance(audit_doc.get("findings"), list) else []
         auth_quota_sensitive = _providers_audit_has_auth_quota_risk(audit_doc)
         needs_refresh = _providers_audit_needs_refresh(audit_doc)
         recommended_cmds = _providers_audit_collect_recommended_commands(audit_doc)
+        before_counts = _providers_audit_summary_counts(audit_doc)
 
         planned_actions: list[Dict[str, Any]] = []
         blocked_actions: list[Dict[str, Any]] = []
@@ -1167,23 +1273,25 @@ class LabWorker:
         expected_state = {
             "audit_invoked": True,
             "audit_returncode_in": [0, 2],
+            "reaudit_if_findings": True,
             "audit_artifact_or_receipt_present": True,
             "no_credential_or_login_actions_executed": True,
             "safe_actions_only_from_allowlist": True,
-            "plan_and_outcome_artifacts_written": True,
+            "plan_outcome_and_reaudit_artifacts_written_if_findings": True,
         }
         plan_payload = {
             "schema": "ajax.lab.providers_audit_plan.v1",
             "ts_utc": _utc_now(),
             "job_id": job_id,
             "job_kind": "providers_audit",
-            "audit": {
+            "audit_before": {
                 "command": audit_cmd,
-                "returncode": int(audit_proc.returncode),
+                "returncode": audit_proc_returncode,
                 "ok_field": bool(audit_doc.get("ok")),
                 "artifact_path": audit_doc.get("artifact_path"),
                 "artifact_md_path": audit_doc.get("artifact_md_path"),
                 "receipt_path": audit_doc.get("receipt_path"),
+                "summary_counts": before_counts,
             },
             "findings_summary": {
                 "count": len(findings),
@@ -1269,20 +1377,109 @@ class LabWorker:
                     )
                 continue
 
+        # Ensure checklist is always actionable when there are findings and we may need escalation.
+        if findings and not checklist:
+            checklist.extend(
+                [
+                    "Inspect providers audit plan/outcome artifacts and compare before/after findings counts.",
+                    "Run `python bin/ajaxctl doctor providers` and review the latest doctor artifact.",
+                    "Run `python bin/ajaxctl audit providers --root . --json` manually after external conditions change.",
+                    "Do not perform login/credential changes from LAB micro-jobs.",
+                ]
+            )
+
         # preserve insertion order while de-duplicating evidence refs
         evidence_refs = list(dict.fromkeys([ref for ref in evidence_refs if isinstance(ref, str) and ref]))
+
+        findings_present = audit_proc_returncode == 2
+        reaudit_stage: Optional[Dict[str, Any]] = None
+        reaudit_doc: Optional[Dict[str, Any]] = None
+        compare_payload: Optional[Dict[str, Any]] = None
+        reaudit_meta: Dict[str, Any] = {"attempted": False}
+        if findings_present:
+            reaudit_stage = _run_audit_stage("post_remediation_reaudit")
+            reaudit_meta["attempted"] = True
+            reaudit_meta["returncode"] = reaudit_stage.get("returncode")
+            if bool(reaudit_stage.get("ok")):
+                reaudit_doc = reaudit_stage["doc"]
+                compare_payload = _providers_audit_compare(audit_doc, reaudit_doc)
+                reaudit_meta.update(
+                    {
+                        "ok": True,
+                        "artifact_path": reaudit_doc.get("artifact_path"),
+                        "artifact_md_path": reaudit_doc.get("artifact_md_path"),
+                        "receipt_path": reaudit_doc.get("receipt_path"),
+                        "summary_counts": _providers_audit_summary_counts(reaudit_doc),
+                    }
+                )
+                _write_json(
+                    reaudit_path,
+                    {
+                        "schema": "ajax.lab.providers_audit_reaudit.v1",
+                        "ts_utc": _utc_now(),
+                        "job_id": job_id,
+                        "job_kind": "providers_audit",
+                        "audit_command": audit_cmd,
+                        "stage": "post_remediation_reaudit",
+                        "returncode": int(reaudit_stage.get("returncode") or 0),
+                        "before": {
+                            "summary_counts": before_counts,
+                            "artifact_path": audit_doc.get("artifact_path"),
+                            "receipt_path": audit_doc.get("receipt_path"),
+                        },
+                        "after": {
+                            "summary_counts": _providers_audit_summary_counts(reaudit_doc),
+                            "artifact_path": reaudit_doc.get("artifact_path"),
+                            "receipt_path": reaudit_doc.get("receipt_path"),
+                        },
+                        "compare": compare_payload,
+                    },
+                )
+                evidence_refs.append(str(reaudit_path))
+                for key in ("artifact_path", "artifact_md_path", "receipt_path"):
+                    val = reaudit_doc.get(key)
+                    if isinstance(val, str) and val:
+                        evidence_refs.append(val)
+            else:
+                _write_json(
+                    reaudit_path,
+                    {
+                        "schema": "ajax.lab.providers_audit_reaudit.v1",
+                        "ts_utc": _utc_now(),
+                        "job_id": job_id,
+                        "job_kind": "providers_audit",
+                        "audit_command": audit_cmd,
+                        "stage": "post_remediation_reaudit",
+                        "ok": False,
+                        "returncode": reaudit_stage.get("returncode"),
+                        "error": reaudit_stage.get("error"),
+                        "stdout": reaudit_stage.get("stdout"),
+                        "stderr": reaudit_stage.get("stderr"),
+                    },
+                )
+                evidence_refs.append(str(reaudit_path))
+
         outcome_payload = {
             "schema": "ajax.lab.providers_audit_outcome.v1",
             "ts_utc": _utc_now(),
             "job_id": job_id,
             "job_kind": "providers_audit",
-            "audit_returncode": int(audit_proc.returncode),
+            "audit_returncode": audit_proc_returncode,
             "auth_quota_sensitive": auth_quota_sensitive,
             "checklist_only": bool(auth_quota_sensitive and not planned_actions),
             "planned_actions": planned_actions,
             "blocked_actions": blocked_actions,
             "executed_actions": executed_actions,
             "checklist": checklist,
+            "audit_before": {
+                "returncode": audit_proc_returncode,
+                "summary_counts": before_counts,
+                "artifact_path": audit_doc.get("artifact_path"),
+                "artifact_md_path": audit_doc.get("artifact_md_path"),
+                "receipt_path": audit_doc.get("receipt_path"),
+            },
+            "audit_reaudit": reaudit_meta,
+            "findings_compare": compare_payload,
             "evidence_refs": evidence_refs,
             "expected_state": expected_state,
         }
@@ -1290,44 +1487,88 @@ class LabWorker:
         evidence_refs.append(str(outcome_path))
         evidence_refs = list(dict.fromkeys(evidence_refs))
 
-        findings_present = int(audit_proc.returncode) == 2
-        if safe_action_failed:
+        if not findings_present:
             return {
-                "outcome": "FAIL",
-                "efe_pass": False,
-                "failure_codes": ["providers_audit_safe_action_failed"],
+                "outcome": "PASS",
+                "efe_pass": True,
+                "failure_codes": [],
                 "evidence_refs": evidence_refs,
-                "next_action": "review_providers_audit_plan",
-                "summary": "Providers audit ran, but a safe remediation action failed.",
+                "next_action": "noop",
+                "summary": "Providers audit completed without findings.",
                 "recommended_actions": planned_actions,
                 "providers_audit_plan_path": str(plan_path),
                 "providers_audit_outcome_path": str(outcome_path),
+                "providers_audit_reaudit_path": None,
+                "checklist_only": False,
             }
 
-        failure_codes = ["providers_audit_findings_present"] if findings_present else []
-        next_action = "noop"
-        if findings_present:
-            next_action = "review_providers_audit_plan"
+        if not (reaudit_stage and bool(reaudit_stage.get("ok")) and isinstance(reaudit_doc, dict)):
+            return {
+                "outcome": "FAIL",
+                "efe_pass": False,
+                "failure_codes": ["providers_audit_reaudit_failed"],
+                "evidence_refs": evidence_refs,
+                "next_action": "review_providers_audit_plan",
+                "summary": "Providers audit remediation ran, but post-remediation re-audit failed.",
+                "recommended_actions": planned_actions,
+                "providers_audit_plan_path": str(plan_path),
+                "providers_audit_outcome_path": str(outcome_path),
+                "providers_audit_reaudit_path": str(reaudit_path),
+                "checklist_only": bool(auth_quota_sensitive and not planned_actions),
+            }
+
+        improved_enough = bool(compare_payload and compare_payload.get("improved_enough"))
+        improvement_reasons = list(compare_payload.get("improvement_reasons") or []) if isinstance(compare_payload, dict) else []
+
+        if improved_enough and not safe_action_failed:
+            after_counts = _providers_audit_summary_counts(reaudit_doc)
+            summary = "Providers audit findings improved after safe remediation and re-audit."
+            if int(reaudit_stage.get("returncode") or 0) == 0:
+                summary = "Providers audit findings were remediated by safe actions and cleared on re-audit."
+            return {
+                "outcome": "PASS",
+                "efe_pass": True,
+                "failure_codes": [],
+                "evidence_refs": evidence_refs,
+                "next_action": "noop",
+                "summary": summary,
+                "recommended_actions": planned_actions,
+                "providers_audit_plan_path": str(plan_path),
+                "providers_audit_outcome_path": str(outcome_path),
+                "providers_audit_reaudit_path": str(reaudit_path),
+                "checklist_only": bool(auth_quota_sensitive and not planned_actions),
+                "reaudit_counts_before": before_counts,
+                "reaudit_counts_after": after_counts,
+                "reaudit_improvement_reasons": improvement_reasons,
+            }
+
+        wait_failure_codes = ["providers_audit_findings_not_improved"]
+        if safe_action_failed:
+            wait_failure_codes.append("providers_audit_safe_action_failed")
         if auth_quota_sensitive:
-            next_action = "ask_user_auth_quota"
-        summary = "Providers audit completed without findings."
-        if findings_present and auth_quota_sensitive:
-            summary = "Providers audit found auth/quota-sensitive issues; checklist generated (no credential actions executed)."
-        elif findings_present and planned_actions:
-            summary = "Providers audit found issues; safe remediation actions were executed and documented."
-        elif findings_present:
-            summary = "Providers audit found issues; remediation plan/checklist was recorded."
+            wait_failure_codes.append("providers_audit_auth_quota_sensitive")
+        next_action = "ask_user_auth_quota" if auth_quota_sensitive else "review_providers_audit_checklist"
+        summary = "Providers audit findings did not improve sufficiently after safe remediation and re-audit."
+        if auth_quota_sensitive:
+            summary = (
+                "Providers audit remains auth/quota-sensitive after re-audit; checklist generated and no credentials were touched."
+            )
+        elif safe_action_failed:
+            summary = "Providers audit remediation had safe-action failures and re-audit did not reach a sufficiently improved state."
         return {
-            "outcome": "PASS",
-            "efe_pass": True,
-            "failure_codes": failure_codes,
+            "outcome": "WAITING_FOR_USER",
+            "efe_pass": False,
+            "failure_codes": wait_failure_codes,
             "evidence_refs": evidence_refs,
             "next_action": next_action,
             "summary": summary,
             "recommended_actions": planned_actions,
             "providers_audit_plan_path": str(plan_path),
             "providers_audit_outcome_path": str(outcome_path),
+            "providers_audit_reaudit_path": str(reaudit_path),
             "checklist_only": bool(auth_quota_sensitive and not planned_actions),
+            "checklist": checklist,
+            "reaudit_improvement_reasons": improvement_reasons,
         }
 
     def _execute_probe_ui(self, job: Dict[str, Any], path: Path) -> Dict[str, Any]:
