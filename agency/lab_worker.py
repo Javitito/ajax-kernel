@@ -37,6 +37,8 @@ except Exception:
 
 
 WORKER_VERSION = "lab_worker_v0"
+LAB_ACTION_EXECUTOR_REGISTRY_SCHEMA = "ajax.lab_action_executor_registry.v1"
+LAB_ACTION_EXECUTOR_REGISTRY_REL = Path("config") / "lab_action_executor_registry.json"
 KNOWN_JOB_KINDS = {
     "snap_lab",
     "snap_lab_silent",
@@ -383,6 +385,101 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         pass
 
 
+def _default_lab_action_executor_registry() -> Dict[str, Any]:
+    """Builtin dispatch registry for LAB micro-jobs (default behavior)."""
+    return {
+        "schema": LAB_ACTION_EXECUTOR_REGISTRY_SCHEMA,
+        "job_kinds": {
+            "snap_lab": {
+                "action_executor": "builtin.snap_lab.v1",
+                "handler": "_execute_snap_lab",
+            },
+            "capabilities_refresh": {
+                "action_executor": "builtin.capabilities_refresh.v1",
+                "handler": "_execute_capabilities_refresh",
+            },
+            "providers_probe": {
+                "action_executor": "builtin.providers_probe.v1",
+                "handler": "_execute_providers_probe",
+            },
+            "probe_ui": {
+                "action_executor": "builtin.probe_ui.v1",
+                "handler": "_execute_probe_ui",
+            },
+            "probe_notepad": {
+                "action_executor": "builtin.probe_notepad.v1",
+                "handler": "_execute_probe_notepad",
+            },
+        },
+    }
+
+
+def _load_lab_action_executor_registry(root_dir: Path) -> Dict[str, Any]:
+    """
+    Load optional LAB action-executor registry.
+
+    If the config file is absent, returns builtin defaults. If the file exists but is invalid,
+    returns builtin defaults plus ``registry_error`` so callers can fail closed (no silent degrade).
+    """
+    builtin = _default_lab_action_executor_registry()
+    cfg_path = Path(root_dir) / LAB_ACTION_EXECUTOR_REGISTRY_REL
+    if not cfg_path.exists():
+        return {
+            **builtin,
+            "registry_path": str(cfg_path),
+            "registry_source": "builtin_default",
+            "registry_error": None,
+        }
+    try:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            **builtin,
+            "registry_path": str(cfg_path),
+            "registry_source": "builtin_default",
+            "registry_error": f"registry_parse_failed:{str(exc)[:160]}",
+        }
+    if not isinstance(raw, dict):
+        return {
+            **builtin,
+            "registry_path": str(cfg_path),
+            "registry_source": "builtin_default",
+            "registry_error": "registry_invalid_root",
+        }
+    merged = {
+        "schema": str(raw.get("schema") or builtin.get("schema") or LAB_ACTION_EXECUTOR_REGISTRY_SCHEMA),
+        "job_kinds": dict(builtin.get("job_kinds") or {}),
+        "registry_path": str(cfg_path),
+        "registry_source": "config",
+        "registry_error": None,
+    }
+    job_kinds = raw.get("job_kinds")
+    if isinstance(job_kinds, dict):
+        for job_kind_raw, entry_raw in job_kinds.items():
+            job_kind = str(job_kind_raw or "").strip().lower()
+            if not job_kind:
+                continue
+            if isinstance(entry_raw, str):
+                merged["job_kinds"][job_kind] = {
+                    "action_executor": entry_raw.strip() or f"config.{job_kind}",
+                    "handler": builtin.get("job_kinds", {}).get(job_kind, {}).get("handler"),
+                }
+                continue
+            if not isinstance(entry_raw, dict):
+                continue
+            action_executor = str(entry_raw.get("action_executor") or f"config.{job_kind}").strip()
+            handler = str(entry_raw.get("handler") or "").strip()
+            if not handler and isinstance(builtin.get("job_kinds"), dict):
+                default_entry = builtin["job_kinds"].get(job_kind)
+                if isinstance(default_entry, dict):
+                    handler = str(default_entry.get("handler") or "").strip()
+            merged["job_kinds"][job_kind] = {
+                "action_executor": action_executor or f"config.{job_kind}",
+                "handler": handler,
+            }
+    return merged
+
+
 class LabWorker:
     def __init__(
         self,
@@ -401,6 +498,7 @@ class LabWorker:
         self.heartbeat_s = heartbeat_s if heartbeat_s is not None else _env_float("AJAX_LAB_WORKER_HEARTBEAT_SEC", 10.0)
         self.stale_sweep_s = stale_sweep_s if stale_sweep_s is not None else _env_int("AJAX_LAB_STALE_SWEEP_SEC", 30)
         self.driver_url = driver_url or _resolve_lab_driver_url()
+        self.action_executor_registry = _load_lab_action_executor_registry(self.root_dir)
         self.worker_version = WORKER_VERSION
         self.capabilities = sorted(KNOWN_JOB_KINDS)
         self.lab_dir = self.root_dir / "artifacts" / "lab"
@@ -415,6 +513,76 @@ class LabWorker:
         self.last_job_id: Optional[str] = None
         self._write_worker_info()
         self._write_worker_heartbeat(status="READY")
+
+    def _resolve_action_executor(self, job_kind: str) -> Dict[str, Any]:
+        kind = str(job_kind or "").strip().lower()
+        registry = self.action_executor_registry if isinstance(self.action_executor_registry, dict) else {}
+        registry_error = str(registry.get("registry_error") or "").strip()
+        if registry_error:
+            return {
+                "ok": False,
+                "error": registry_error,
+                "source": str(registry.get("registry_source") or "builtin_default"),
+                "registry_path": registry.get("registry_path"),
+                "job_kind": kind,
+                "action_executor": None,
+                "handler": None,
+            }
+        job_kinds = registry.get("job_kinds") if isinstance(registry.get("job_kinds"), dict) else {}
+        entry = job_kinds.get(kind)
+        if not isinstance(entry, dict):
+            return {
+                "ok": False,
+                "error": "executor_not_configured",
+                "source": str(registry.get("registry_source") or "builtin_default"),
+                "registry_path": registry.get("registry_path"),
+                "job_kind": kind,
+                "action_executor": None,
+                "handler": None,
+            }
+        action_executor = str(entry.get("action_executor") or "").strip()
+        handler_name = str(entry.get("handler") or "").strip()
+        if not handler_name:
+            return {
+                "ok": False,
+                "error": "executor_handler_missing",
+                "source": str(registry.get("registry_source") or "builtin_default"),
+                "registry_path": registry.get("registry_path"),
+                "job_kind": kind,
+                "action_executor": action_executor or None,
+                "handler": None,
+            }
+        if not handler_name.startswith("_execute_"):
+            return {
+                "ok": False,
+                "error": "executor_handler_invalid",
+                "source": str(registry.get("registry_source") or "builtin_default"),
+                "registry_path": registry.get("registry_path"),
+                "job_kind": kind,
+                "action_executor": action_executor or None,
+                "handler": handler_name,
+            }
+        handler_fn = getattr(self, handler_name, None)
+        if not callable(handler_fn):
+            return {
+                "ok": False,
+                "error": "executor_handler_unavailable",
+                "source": str(registry.get("registry_source") or "builtin_default"),
+                "registry_path": registry.get("registry_path"),
+                "job_kind": kind,
+                "action_executor": action_executor or None,
+                "handler": handler_name,
+            }
+        return {
+            "ok": True,
+            "error": None,
+            "source": str(registry.get("registry_source") or "builtin_default"),
+            "registry_path": registry.get("registry_path"),
+            "job_kind": kind,
+            "action_executor": action_executor or f"builtin.{kind}",
+            "handler": handler_name,
+            "handler_fn": handler_fn,
+        }
 
     def _write_worker_info(self) -> None:
         payload = {
@@ -1109,16 +1277,32 @@ class LabWorker:
             kind = "probe_notepad"
         if kind == "snap_lab_silent":
             kind = "snap_lab"
-        if kind == "snap_lab":
-            return self._execute_snap_lab(job, path)
-        if kind == "capabilities_refresh":
-            return self._execute_capabilities_refresh(job, path)
-        if kind == "providers_probe":
-            return self._execute_providers_probe(job, path)
-        if kind == "probe_ui":
-            return self._execute_probe_ui(job, path)
-        if kind == "probe_notepad":
-            return self._execute_probe_notepad(job, path)
+        if kind in {"snap_lab", "capabilities_refresh", "providers_probe", "probe_ui", "probe_notepad"}:
+            resolved = self._resolve_action_executor(kind)
+            if not bool(resolved.get("ok")):
+                label = kind or "unknown"
+                err = str(resolved.get("error") or "executor_resolution_failed")
+                evidence_refs = []
+                reg_path = resolved.get("registry_path")
+                if reg_path:
+                    evidence_refs.append(str(reg_path))
+                return {
+                    "outcome": "FAIL",
+                    "efe_pass": False,
+                    "failure_codes": ["lab_action_executor_invalid", err, f"job_kind_{label}"],
+                    "evidence_refs": evidence_refs,
+                    "next_action": "review_lab_action_executor_registry",
+                    "summary": f"LAB action executor invalid for {label}: {err}",
+                    "action_executor": resolved.get("action_executor"),
+                    "action_executor_source": resolved.get("source"),
+                    "action_executor_handler": resolved.get("handler"),
+                }
+            result = resolved["handler_fn"](job, path)
+            if isinstance(result, dict):
+                result.setdefault("action_executor", resolved.get("action_executor"))
+                result.setdefault("action_executor_source", resolved.get("source"))
+                result.setdefault("action_executor_handler", resolved.get("handler"))
+            return result
         label = kind or "unknown"
         return {
             "outcome": "FAIL",
