@@ -11,7 +11,13 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agency.explore_policy import compute_human_active, dummy_display_ok, load_explore_policy, read_human_signal
+from agency.explore_policy import (
+    compute_human_active,
+    dummy_display_ok,
+    load_explore_policy,
+    read_human_signal,
+    unknown_signal_as_human_policy,
+)
 from agency.lab_control import LabStateStore
 from agency.process_utils import pid_running
 from agency.human_permission import read_human_permission_status
@@ -96,7 +102,7 @@ def _compute_explore_state(root_dir: Path) -> Dict[str, Any]:
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = bool(pol.get("unknown_signal_as_human", True))
+    unknown_as_human = unknown_signal_as_human_policy(cfg)
     signal = read_human_signal(root_dir, policy=cfg)
     active, reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     return {
@@ -180,7 +186,7 @@ def _read_human_active_signal(root_dir: Path) -> Dict[str, Any]:
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = bool(pol.get("unknown_signal_as_human", True))
+    unknown_as_human = unknown_signal_as_human_policy(cfg)
     signal = read_human_signal(root_dir, policy=cfg)
     active, reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     return {
@@ -290,7 +296,7 @@ def _ui_policy_gate(root_dir: Path, *, job: Dict[str, Any], ui_intrusive: bool) 
         threshold_s = float(pol.get("human_active_threshold_s") or 90)
     except Exception:
         threshold_s = 90.0
-    unknown_as_human = bool(pol.get("unknown_signal_as_human", True))
+    unknown_as_human = unknown_signal_as_human_policy(cfg)
     active, _reason = compute_human_active(signal, threshold_s=threshold_s, unknown_as_human=unknown_as_human)
     state = "HUMAN_DETECTED" if active else "AWAY"
 
