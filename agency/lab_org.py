@@ -9,6 +9,10 @@ from agency.experiment_cancellation import get_experiment_record, is_experiment_
 from agency.explore_policy import dummy_display_ok, evaluate_explore_state, load_explore_policy, state_rules
 from agency.human_permission import read_human_permission_status
 from agency.lab_control import LabStateStore
+try:
+    from agency.hunger import get_current_hunger
+except Exception:  # pragma: no cover
+    get_current_hunger = None  # type: ignore
 
 try:
     import yaml  # type: ignore
@@ -131,6 +135,18 @@ def _normalize_challenges(raw: Any) -> List[Dict[str, Any]]:
             budget_s = int(item.get("budget_s") or 0)
         except Exception:
             budget_s = 0
+        try:
+            min_hunger = float(item.get("min_hunger")) if item.get("min_hunger") is not None else None
+        except Exception:
+            min_hunger = None
+        try:
+            min_explore_budget = (
+                float(item.get("min_explore_budget"))
+                if item.get("min_explore_budget") is not None
+                else None
+            )
+        except Exception:
+            min_explore_budget = None
         tags = item.get("tags") if isinstance(item.get("tags"), list) else []
         out.append(
             {
@@ -140,6 +156,8 @@ def _normalize_challenges(raw: Any) -> List[Dict[str, Any]]:
                 "ui_intrusive": ui_intrusive,
                 "cadence_s": max(0, cadence_s),
                 "budget_s": max(0, budget_s),
+                "min_hunger": min_hunger,
+                "min_explore_budget": min_explore_budget,
                 "tags": [str(t) for t in tags if str(t)],
             }
         )
@@ -250,6 +268,7 @@ def lab_org_tick(
         "cancelled_experiments_skipped": [],
         "actionable_hint": None,
         "forced_non_ui_due": False,
+        "hunger_gate": None,
         "last_job_ts": dict(last_job_ts),
         "enqueued": False,
         "enqueued_job_id": None,
@@ -376,6 +395,81 @@ def lab_org_tick(
                     receipt["reason"] = "dummy_display_required"
                 return receipt
             due = filtered
+
+            # Optional hunger/explore-budget gating per micro-challenge (declarative manifest fields).
+            needs_hunger_gate = any(
+                c.get("min_hunger") is not None or c.get("min_explore_budget") is not None for c in due
+            )
+            if needs_hunger_gate:
+                hunger_error = None
+                hunger_snapshot = None
+                if get_current_hunger is None:
+                    hunger_error = "hunger_module_unavailable"
+                else:
+                    try:
+                        hs = get_current_hunger(root)
+                        hunger_val = float(getattr(hs, "hunger", 0.0))
+                        decision = getattr(hs, "decision", None)
+                        explore_budget_val = float(getattr(decision, "explore_budget", 0.0))
+                        hunger_snapshot = {
+                            "hunger": hunger_val,
+                            "explore_budget": explore_budget_val,
+                            "source": "agency.hunger.get_current_hunger",
+                        }
+                    except Exception as exc:
+                        hunger_error = f"hunger_compute_failed:{str(exc)[:160]}"
+                        hunger_snapshot = None
+
+                filtered_hunger: List[Dict[str, Any]] = []
+                skipped_gate: List[Dict[str, Any]] = []
+                for c in due:
+                    min_h = c.get("min_hunger")
+                    min_b = c.get("min_explore_budget")
+                    if min_h is None and min_b is None:
+                        filtered_hunger.append(c)
+                        continue
+                    if hunger_snapshot is None:
+                        skipped_gate.append(
+                            {
+                                "id": str(c.get("id") or ""),
+                                "job_kind": str(c.get("job_kind") or ""),
+                                "reason": hunger_error or "hunger_unavailable",
+                            }
+                        )
+                        continue
+                    h_val = float(hunger_snapshot.get("hunger") or 0.0)
+                    b_val = float(hunger_snapshot.get("explore_budget") or 0.0)
+                    failed: List[str] = []
+                    if min_h is not None and h_val < float(min_h):
+                        failed.append("hunger_below_threshold")
+                    if min_b is not None and b_val < float(min_b):
+                        failed.append("explore_budget_below_threshold")
+                    if failed:
+                        skipped_gate.append(
+                            {
+                                "id": str(c.get("id") or ""),
+                                "job_kind": str(c.get("job_kind") or ""),
+                                "reason": ",".join(failed),
+                                "observed_hunger": h_val,
+                                "observed_explore_budget": b_val,
+                                "min_hunger": min_h,
+                                "min_explore_budget": min_b,
+                            }
+                        )
+                        continue
+                    filtered_hunger.append(c)
+
+                receipt["hunger_gate"] = {
+                    "applied": True,
+                    "snapshot": hunger_snapshot,
+                    "error": hunger_error,
+                    "skipped": skipped_gate,
+                }
+                if not filtered_hunger:
+                    receipt["skipped_reason"] = "hunger_budget_gate"
+                    receipt["reason"] = "hunger_budget_gate"
+                    return receipt
+                due = filtered_hunger
 
         non_cancelled_due: List[Dict[str, Any]] = []
         cancelled_due: List[str] = []

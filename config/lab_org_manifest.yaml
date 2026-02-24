@@ -14,3 +14,12 @@ micro_challenges:
     cadence_s: 300
     budget_s: 20
     tags: [safe, providers]
+  - id: providers_audit
+    job_kind: providers_audit
+    enabled: true
+    ui_intrusive: false
+    cadence_s: 1800
+    budget_s: 30
+    min_hunger: 0.4
+    min_explore_budget: 0.1
+    tags: [safe, providers, audit, read_only]
