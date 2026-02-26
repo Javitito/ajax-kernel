@@ -6033,8 +6033,16 @@ def cmd_doctor_bridge(args: argparse.Namespace) -> int:
         print(f"Fallo al ejecutar doctor bridge: {exc}", file=sys.stderr)
         return 2
     artifact = persist_bridge_doctor(ROOT, payload)
-    output = {"ok": True, "artifact": str(artifact), "providers": payload.get("providers", {})}
+    overall_ok = bool(payload.get("ok", True))
+    output = {
+        "ok": overall_ok,
+        "artifact": str(artifact),
+        "summary": payload.get("summary", {}),
+        "providers": payload.get("providers", {}),
+    }
     print(json.dumps(output, ensure_ascii=False, indent=2))
+    if not overall_ok:
+        return 1
     if any(
         isinstance(entry, dict) and entry.get("status") not in {"OK", "UP"}
         for entry in output.get("providers", {}).values()

@@ -42,6 +42,8 @@ providers:
   qwen_cloud:
     kind: cli
     command: ["qwen", "-o", "json", "{prompt}"]
+    probe_command: ["qwen", "--version"]
+    infer_command: ["qwen", "-o", "json", "{prompt}"]
     format: "text"
     env: {}
     workdir: "."
@@ -49,6 +51,8 @@ providers:
     roles: ["brain", "council", "scout"]
     tier: "cheap"
     modes: ["planner", "verifier", "chatter"]
+    timeout_seconds: 8
+    probe_timeout_seconds: 2
     default_model: "qwen2.5-7b-instruct"
     static_models:
       - id: "qwen2.5-7b-instruct"
@@ -56,11 +60,14 @@ providers:
   gemini_cli:
     kind: cli
     command: ["gemini", "--model", "auto", "-o", "json", "{prompt}"]
+    probe_command: ["gemini", "-h"]
+    infer_command: ["gemini", "--model", "auto", "-o", "json", "{prompt}"]
     format: "text"
     roles: ["brain", "scout"]
     tier: "balanced"
     modes: ["planner", "verifier"]
     timeout_seconds: 40
+    probe_timeout_seconds: 4
     static_models:
       - id: "gemini-2.5-flash"
         modalities: ["text", "vision"]
@@ -77,16 +84,20 @@ providers:
   codex_cli:
     kind: cli
     command: ["cdx", "models", "--json"]
+    probe_command: ["codex", "--version"]
+    infer_command: ["cdx", "models", "--json"]
     format: "json"
     env: {}
     workdir: "."
     vision_hints: ["vision", "vl"]
+    disabled_for_subcall: true
     disabled: true
     tier: "premium"
     modes: ["planner", "verifier", "chatter"]
   codex_brain:
     kind: codex_cli_jsonl
     command: ["codex", "exec", "--model", "{model}", "--json"]
+    probe_command: ["codex", "--version"]
     static_models:
       - id: "gpt-5.1-codex-max"
         modalities: ["text", "vision"]
