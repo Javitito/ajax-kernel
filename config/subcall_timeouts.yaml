@@ -1,0 +1,5 @@
+schema: ajax.subcall_timeouts.v1
+tiers:
+  T0: 6
+  T1: 8
+  T2: 15

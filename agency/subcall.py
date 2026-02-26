@@ -255,6 +255,48 @@ def _load_model_providers(root_dir: Path) -> Dict[str, Any]:
     return providers if isinstance(providers, dict) else {}
 
 
+def _load_subcall_timeout_map(root_dir: Path) -> Dict[str, int]:
+    cfg_yaml_path = root_dir / "config" / "subcall_timeouts.yaml"
+    cfg_json_path = root_dir / "config" / "subcall_timeouts.json"
+    data: Any = None
+    if yaml is not None and cfg_yaml_path.exists():
+        try:
+            data = yaml.safe_load(cfg_yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = None
+    if data is None and cfg_json_path.exists():
+        try:
+            data = json.loads(cfg_json_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        return {}
+    tiers_doc = data.get("tiers") if isinstance(data.get("tiers"), dict) else data
+    out: Dict[str, int] = {}
+    if not isinstance(tiers_doc, dict):
+        return out
+    for tier in ("T0", "T1", "T2"):
+        raw = tiers_doc.get(tier)
+        try:
+            if raw is None:
+                continue
+            out[tier] = max(1, int(raw))
+        except Exception:
+            continue
+    return out
+
+
+def _resolve_subcall_timeout_seconds(*, cfg: Dict[str, Any], tier: str, tier_timeout_map: Dict[str, int]) -> int:
+    provider_timeout = int(cfg.get("timeout_seconds") or 60)
+    tier_timeout = tier_timeout_map.get(str(tier or "").strip().upper())
+    force_provider_timeout = bool(cfg.get("force_provider_timeout") or cfg.get("timeout_force"))
+    if tier_timeout is None:
+        return provider_timeout
+    if force_provider_timeout and cfg.get("timeout_seconds") is not None:
+        return provider_timeout
+    return int(tier_timeout)
+
+
 def _subcall_role_to_provider_role(role: str) -> str:
     role_n = (role or "").strip().lower()
     if role_n == "scout":
@@ -327,7 +369,7 @@ ProviderCaller = Callable[[str, Dict[str, Any], str, str, bool], ProviderCallRes
 def _default_call_provider(provider: str, cfg: Dict[str, Any], system_prompt: str, user_prompt: str, json_mode: bool) -> ProviderCallResult:
     kind = (cfg.get("kind") or "").strip().lower()
     model_id = cfg.get("_selected_model") or cfg.get("default_model") or cfg.get("model")
-    timeout_s = int(cfg.get("timeout_seconds") or 60)
+    timeout_s = int(cfg.get("_effective_timeout_seconds") or cfg.get("timeout_seconds") or 60)
 
     if kind == "codex_cli_jsonl":
         cmd_template = cfg.get("command") or ["codex", "exec", "--model", "{model}", "--json"]
@@ -528,6 +570,7 @@ def run_subcall(
             ladder = [forced] + list(ladder or [])
 
     providers_cfg = _load_model_providers(root_dir)
+    tier_timeout_map = _load_subcall_timeout_map(root_dir)
     defaults = policy_doc.get("defaults") if isinstance(policy_doc, dict) else {}
     prefixes = []
     if isinstance(defaults, dict):
@@ -699,6 +742,11 @@ def run_subcall(
             cfg = dict(cfg_any) if isinstance(cfg_any, dict) else {}
             if cfg.get("default_model") and not cfg.get("_selected_model"):
                 cfg["_selected_model"] = cfg.get("default_model")
+            cfg["_effective_timeout_seconds"] = _resolve_subcall_timeout_seconds(
+                cfg=cfg,
+                tier=tier_u,
+                tier_timeout_map=tier_timeout_map,
+            )
 
             system_prompt, user_prompt = _compile_subcall_prompts(role=role_n, tier=tier_u, prompt=prompt, json_mode=json_mode)
             attempt_started = _now_ts()
@@ -746,6 +794,7 @@ def run_subcall(
                         "provider": provider,
                         "ok": True,
                         "error": None,
+                        "timeout_s": int(cfg.get("_effective_timeout_seconds") or 0),
                         "latency_ms": int((_now_ts() - attempt_started) * 1000),
                         "tokens": attempt_tokens,
                         "repaired": bool(repaired),
@@ -759,6 +808,7 @@ def run_subcall(
                         "provider": provider,
                         "ok": False,
                         "error": attempt_error[:200],
+                        "timeout_s": int(cfg.get("_effective_timeout_seconds") or 0),
                         "latency_ms": int((_now_ts() - attempt_started) * 1000),
                         "tokens": attempt_tokens,
                         "repaired": bool(repaired),
