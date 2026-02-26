@@ -33,6 +33,8 @@ from agency.provider_policy import load_provider_policy
 
 
 _CLI_DEFAULT_MODEL_PROVIDERS = {"codex_brain", "gemini_cli", "qwen_cli"}
+_PROBE_FAILURE_THRESHOLD_DEFAULT = 2
+_PROBE_FAILURE_COOLDOWN_SECONDS_DEFAULT = 900
 
 
 def _now_ts() -> float:
@@ -225,6 +227,7 @@ class LedgerRow:
     last_fail_ts: Optional[float] = None
     cost_class: str = "paid"  # free | generous | paid
     details: Dict[str, Any] = field(default_factory=dict)
+    consecutive_probe_failures: int = 0
     capabilities: Dict[str, bool] = field(default_factory=dict)
     policy_state_text: Optional[str] = None
     policy_state_vision: Optional[str] = None
@@ -243,6 +246,7 @@ class LedgerRow:
             "last_fail_ts": self.last_fail_ts,
             "cost_class": self.cost_class,
             "details": dict(self.details),
+            "consecutive_probe_failures": int(self.consecutive_probe_failures or 0),
             "capabilities": dict(self.capabilities),
             "policy_state": {"text": self.policy_state_text, "vision": self.policy_state_vision},
         }
@@ -347,6 +351,26 @@ class ProviderLedger:
             except Exception:
                 base = base
         return base
+
+    def _probe_failure_threshold(self, policy: Dict[str, Any]) -> int:
+        defaults = policy.get("defaults") if isinstance(policy, dict) else None
+        raw = (defaults or {}).get("probe_failures_threshold") if isinstance(defaults, dict) else None
+        try:
+            if raw is None:
+                return _PROBE_FAILURE_THRESHOLD_DEFAULT
+            return max(1, int(raw))
+        except Exception:
+            return _PROBE_FAILURE_THRESHOLD_DEFAULT
+
+    def _probe_failure_cooldown_seconds(self, policy: Dict[str, Any]) -> int:
+        defaults = policy.get("defaults") if isinstance(policy, dict) else None
+        raw = (defaults or {}).get("probe_failures_cooldown_seconds") if isinstance(defaults, dict) else None
+        try:
+            if raw is None:
+                return _PROBE_FAILURE_COOLDOWN_SECONDS_DEFAULT
+            return max(0, int(raw))
+        except Exception:
+            return _PROBE_FAILURE_COOLDOWN_SECONDS_DEFAULT
 
     def _policy_state(self, policy: Dict[str, Any], provider: str, cap: str) -> Optional[str]:
         providers = policy.get("providers") if isinstance(policy, dict) else None
@@ -659,6 +683,11 @@ class ProviderLedger:
                 prev_status = prev_row.get("status") if isinstance(prev_row.get("status"), str) else None
                 last_ok_ts = _parse_float(prev_row.get("last_ok_ts"))
                 last_fail_ts = _parse_float(prev_row.get("last_fail_ts"))
+                prev_probe_failures = 0
+                try:
+                    prev_probe_failures = max(0, int(prev_row.get("consecutive_probe_failures") or 0))
+                except Exception:
+                    prev_probe_failures = 0
 
                 if prev_cd and now < prev_cd and prev_status and prev_status != "ok":
                     rows.append(
@@ -673,6 +702,7 @@ class ProviderLedger:
                             last_fail_ts=last_fail_ts,
                             cost_class=cost_class,
                             details={"source": "cooldown"},
+                            consecutive_probe_failures=prev_probe_failures,
                             capabilities=capabilities,
                             policy_state_text=policy_state_text,
                             policy_state_vision=policy_state_vision,
@@ -833,6 +863,7 @@ class ProviderLedger:
                             last_fail_ts=last_fail_ts,
                             cost_class=cost_class,
                             details={"source": "probe", "detail": detail},
+                            consecutive_probe_failures=0,
                             capabilities=capabilities,
                             policy_state_text=policy_state_text,
                             policy_state_vision=policy_state_vision,
@@ -842,6 +873,9 @@ class ProviderLedger:
 
                 status = "soft_fail"
                 cooldown_until_ts = None
+                probe_failure_count = max(0, int(prev_probe_failures)) + 1
+                probe_failure_threshold = self._probe_failure_threshold(policy)
+                probe_failure_cooldown_s = self._probe_failure_cooldown_seconds(policy)
                 if reason == "auth":
                     status = "hard_fail"
                 elif reason == "bridge_error":
@@ -853,7 +887,13 @@ class ProviderLedger:
                 else:
                     status = "soft_fail"
 
-                if status == "soft_fail" and reason in {"quota_exhausted", "429_tpm", "timeout", "bridge_error"}:
+                if status == "soft_fail" and reason in {"timeout", "bridge_error"}:
+                    if probe_failure_count >= probe_failure_threshold:
+                        reason = "probe_failed"
+                        cooldown_until_ts = now + float(probe_failure_cooldown_s)
+                    else:
+                        cooldown_until_ts = None
+                elif status == "soft_fail" and reason in {"quota_exhausted", "429_tpm"}:
                     cooldown_until_ts = now + float(self._policy_cooldown_seconds(policy, reason))
                 rows.append(
                     LedgerRow(
@@ -867,6 +907,9 @@ class ProviderLedger:
                         last_fail_ts=now,
                         cost_class=cost_class,
                         details={"source": "probe", "detail": detail},
+                        consecutive_probe_failures=(
+                            probe_failure_count if status != "ok" and reason in {"timeout", "bridge_error", "probe_failed"} else 0
+                        ),
                         capabilities=capabilities,
                         policy_state_text=policy_state_text,
                         policy_state_vision=policy_state_vision,
@@ -913,7 +956,10 @@ class ProviderLedger:
         """Registrar un fallo en tiempo real y aplicar cooldown."""
         now = _now_ts()
         policy = self._load_policy()
-        cooldown_s = float(self._policy_cooldown_seconds(policy, reason))
+        if str(reason or "").strip().lower() == "probe_failed":
+            cooldown_s = float(self._probe_failure_cooldown_seconds(policy))
+        else:
+            cooldown_s = float(self._policy_cooldown_seconds(policy, reason))
         
         doc = self.load_latest()
         rows = doc.get("rows", [])
@@ -925,6 +971,15 @@ class ProviderLedger:
                 row["reason"] = reason
                 row["last_fail_ts"] = now
                 row["cooldown_until_ts"] = now + cooldown_s
+                prev_probe_failures = 0
+                try:
+                    prev_probe_failures = max(0, int(row.get("consecutive_probe_failures") or 0))
+                except Exception:
+                    prev_probe_failures = 0
+                if reason in {"timeout", "bridge_error", "probe_failed"}:
+                    row["consecutive_probe_failures"] = prev_probe_failures + 1
+                else:
+                    row["consecutive_probe_failures"] = 0
                 row["details"]["source"] = "realtime_failure"
                 row["details"]["detail"] = detail[:200]
                 updated = True
@@ -948,6 +1003,7 @@ class ProviderLedger:
                 row["reason"] = None
                 row["last_ok_ts"] = now
                 row["cooldown_until_ts"] = None
+                row["consecutive_probe_failures"] = 0
                 row["details"]["source"] = "realtime_success"
                 updated = True
                 break

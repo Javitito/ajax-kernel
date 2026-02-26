@@ -7,6 +7,9 @@ defaults:
     429_tpm: 1800
     timeout: 600
     bridge_error: 20
+  # Probe-fail policy: evita bucles de retry cuando un bridge cae repetidamente.
+  probe_failures_threshold: 2
+  probe_failures_cooldown_seconds: 900
   # Guardas de coste: prefijos que se excluyen en cost_mode=save_codex.
   save_codex_exclude_prefixes: [codex_]
 
