@@ -1,0 +1,279 @@
+{
+  "schema": "ajax.skills_manifest.v1",
+  "generated_at_utc": "20260227-212319",
+  "source": {
+    "repo": "https://github.com/sickn33/antigravity-awesome-skills",
+    "local_path": "tools/third_party/antigravity-awesome-skills",
+    "pin_commit": "64dab41930a800748f16bd284ceeb3a83250c2e1"
+  },
+  "counts": {
+    "total_skills": 950,
+    "risk_counts": {
+      "safe": 156,
+      "unknown": 793,
+      "none": 1
+    },
+    "safe_skills_total": 156,
+    "allowlisted_safe_skills": 16
+  },
+  "allowlisted": [
+    {
+      "name": "n8n-mcp-tools-expert",
+      "group": "mcp",
+      "path": "skills/n8n-mcp-tools-expert/SKILL.md",
+      "description": "Expert guide for using n8n-mcp MCP tools effectively. Use when searching for nodes, validating configurations, accessing templates, managing workflows, or using any n8n-mcp tool. Provides tool sele..."
+    },
+    {
+      "name": "tool-design",
+      "group": "mcp",
+      "path": "skills/tool-design/SKILL.md",
+      "description": "Build tools that agents can use effectively, including architectural reduction patterns"
+    },
+    {
+      "name": "commit",
+      "group": "git_workflows",
+      "path": "skills/commit/SKILL.md",
+      "description": "Create commit messages following Sentry conventions. Use when committing code changes, writing commit messages, or formatting git history. Follows conventional commits with Sentry-specific issue re..."
+    },
+    {
+      "name": "create-pr",
+      "group": "git_workflows",
+      "path": "skills/create-pr/SKILL.md",
+      "description": "Create pull requests following Sentry conventions. Use when opening PRs, writing PR descriptions, or preparing changes for review. Follows Sentry's code review guidelines."
+    },
+    {
+      "name": "iterate-pr",
+      "group": "git_workflows",
+      "path": "skills/iterate-pr/SKILL.md",
+      "description": "Iterate on a PR until CI passes. Use when you need to fix CI failures, address review feedback, or continuously push fixes until all checks are green. Automates the feedback-fix-push-wait cycle."
+    },
+    {
+      "name": "fix-review",
+      "group": "git_workflows",
+      "path": "skills/fix-review/SKILL.md",
+      "description": "Verify fix commits address audit findings without new bugs"
+    },
+    {
+      "name": "prompt-engineer",
+      "group": "prompt_engineering",
+      "path": "skills/prompt-engineer/SKILL.md",
+      "description": "Transforms user prompts into optimized prompts using frameworks (RTF, RISEN, Chain of Thought, RODES, Chain of Density, RACE, RISE, STAR, SOAP, CLEAR, GROW)"
+    },
+    {
+      "name": "context-fundamentals",
+      "group": "prompt_engineering",
+      "path": "skills/context-fundamentals/SKILL.md",
+      "description": "Understand what context is, why it matters, and the anatomy of context in agent systems"
+    },
+    {
+      "name": "documentation",
+      "group": "docs_tooling",
+      "path": "skills/documentation/SKILL.md",
+      "description": "Documentation generation workflow covering API docs, architecture docs, README files, code comments, and technical writing."
+    },
+    {
+      "name": "api-documentation",
+      "group": "docs_tooling",
+      "path": "skills/api-documentation/SKILL.md",
+      "description": "API documentation workflow for generating OpenAPI specs, creating developer guides, and maintaining comprehensive API documentation."
+    },
+    {
+      "name": "readme",
+      "group": "docs_tooling",
+      "path": "skills/readme/SKILL.md",
+      "description": "When the user wants to create or update a README.md file for a project. Also use when the user says 'write readme,' 'create readme,' 'document this project,' 'project documentation,' or asks for he..."
+    },
+    {
+      "name": "clean-code",
+      "group": "code_review",
+      "path": "skills/clean-code/SKILL.md",
+      "description": "Applies principles from Robert C. Martin's 'Clean Code'. Use this skill when writing, reviewing, or refactoring code to ensure high quality, readability, and maintainability. Covers naming, functio..."
+    },
+    {
+      "name": "sharp-edges",
+      "group": "code_review",
+      "path": "skills/sharp-edges/SKILL.md",
+      "description": "Identify error-prone APIs and dangerous configurations"
+    },
+    {
+      "name": "testing-qa",
+      "group": "testing",
+      "path": "skills/testing-qa/SKILL.md",
+      "description": "Comprehensive testing and QA workflow covering unit testing, integration testing, E2E testing, browser automation, and quality assurance."
+    },
+    {
+      "name": "e2e-testing",
+      "group": "testing",
+      "path": "skills/e2e-testing/SKILL.md",
+      "description": "End-to-end testing workflow with Playwright for browser automation, visual regression, cross-browser testing, and CI/CD integration."
+    },
+    {
+      "name": "pypict-skill",
+      "group": "testing",
+      "path": "skills/pypict-skill/SKILL.md",
+      "description": "Pairwise test generation"
+    }
+  ],
+  "copied_to_leann_source": [
+    {
+      "skill": "n8n-mcp-tools-expert",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/n8n-mcp-tools-expert/SKILL.md"
+      ]
+    },
+    {
+      "skill": "tool-design",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/tool-design/SKILL.md"
+      ]
+    },
+    {
+      "skill": "commit",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/commit/SKILL.md"
+      ]
+    },
+    {
+      "skill": "create-pr",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/create-pr/SKILL.md"
+      ]
+    },
+    {
+      "skill": "iterate-pr",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/iterate-pr/SKILL.md"
+      ]
+    },
+    {
+      "skill": "fix-review",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/fix-review/SKILL.md"
+      ]
+    },
+    {
+      "skill": "prompt-engineer",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/prompt-engineer/SKILL.md",
+        ".leann/sources/skills/antigravity/prompt-engineer/README.md"
+      ]
+    },
+    {
+      "skill": "context-fundamentals",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/context-fundamentals/SKILL.md"
+      ]
+    },
+    {
+      "skill": "documentation",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/documentation/SKILL.md"
+      ]
+    },
+    {
+      "skill": "api-documentation",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/api-documentation/SKILL.md"
+      ]
+    },
+    {
+      "skill": "readme",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/readme/SKILL.md"
+      ]
+    },
+    {
+      "skill": "clean-code",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/clean-code/SKILL.md"
+      ]
+    },
+    {
+      "skill": "sharp-edges",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/sharp-edges/SKILL.md"
+      ]
+    },
+    {
+      "skill": "testing-qa",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/testing-qa/SKILL.md"
+      ]
+    },
+    {
+      "skill": "e2e-testing",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/e2e-testing/SKILL.md"
+      ]
+    },
+    {
+      "skill": "pypict-skill",
+      "copied_files": [
+        ".leann/sources/skills/antigravity/pypict-skill/SKILL.md"
+      ]
+    }
+  ],
+  "top10_by_ajax_utility": [
+    {
+      "name": "n8n-mcp-tools-expert",
+      "group": "mcp",
+      "score": 12
+    },
+    {
+      "name": "create-pr",
+      "group": "git_workflows",
+      "score": 11
+    },
+    {
+      "name": "fix-review",
+      "group": "git_workflows",
+      "score": 11
+    },
+    {
+      "name": "iterate-pr",
+      "group": "git_workflows",
+      "score": 11
+    },
+    {
+      "name": "testing-qa",
+      "group": "testing",
+      "score": 10
+    },
+    {
+      "name": "tool-design",
+      "group": "mcp",
+      "score": 10
+    },
+    {
+      "name": "commit",
+      "group": "git_workflows",
+      "score": 9
+    },
+    {
+      "name": "api-documentation",
+      "group": "docs_tooling",
+      "score": 8
+    },
+    {
+      "name": "clean-code",
+      "group": "code_review",
+      "score": 8
+    },
+    {
+      "name": "documentation",
+      "group": "docs_tooling",
+      "score": 8
+    }
+  ],
+  "leann_index": {
+    "status": "ok",
+    "index_name": "antigravity_skills_safe",
+    "details": "Index built with include-hidden + .md filter; list command timed out but index artifacts and passages count verify success.",
+    "verify": {
+      "meta_path": ".leann/indexes/antigravity_skills_safe/documents.leann.meta.json",
+      "passages_path": ".leann/indexes/antigravity_skills_safe/documents.leann.passages.jsonl",
+      "passage_count": 294,
+      "leann_list_timeout_observed": true
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "schema": "ajax.skills_ingest.receipt.v1",
+  "created_at_utc": "20260227-212319",
+  "source": {
+    "repo": "https://github.com/sickn33/antigravity-awesome-skills",
+    "local_path": "tools/third_party/antigravity-awesome-skills",
+    "pin_commit": "64dab41930a800748f16bd284ceeb3a83250c2e1"
+  },
+  "policy": {
+    "risk_required": "safe",
+    "excluded_terms": [
+      "pentest",
+      "penetration",
+      "exploit",
+      "recon",
+      "hacking",
+      "red-team",
+      "sqlmap",
+      "metasploit"
+    ]
+  },
+  "counts": {
+    "total_skills": 950,
+    "safe_skills_total": 156,
+    "allowlisted_safe_skills": 16
+  },
+  "artifacts": {
+    "allowlist_yaml": "config/skills_allowlist.yaml",
+    "manifest_json": "artifacts/skills_ingest/skills_manifest_20260227-212319.json",
+    "summary_md": "artifacts/skills_ingest/summary_20260227-212319.md",
+    "leann_index_json": "artifacts/skills_ingest/leann_index_20260227-212319.json"
+  },
+  "leann_source_root": ".leann/sources/skills/antigravity",
+  "leann_index": {
+    "status": "ok",
+    "index_name": "antigravity_skills_safe",
+    "details": "Index built with include-hidden + .md filter; list command timed out but index artifacts and passages count verify success.",
+    "verify": {
+      "meta_path": ".leann/indexes/antigravity_skills_safe/documents.leann.meta.json",
+      "passages_path": ".leann/indexes/antigravity_skills_safe/documents.leann.passages.jsonl",
+      "passage_count": 294,
+      "leann_list_timeout_observed": true
+    }
+  }
+}

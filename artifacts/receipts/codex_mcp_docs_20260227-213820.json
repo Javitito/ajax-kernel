@@ -1,0 +1,14 @@
+{
+  "schema": "ajax.codex_mcp_docs.v1",
+  "created_at_utc": "20260227-213820",
+  "commands": [
+    "codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp",
+    "codex mcp list"
+  ],
+  "result": {
+    "server_name": "openaiDeveloperDocs",
+    "url": "https://developers.openai.com/mcp",
+    "list_output": "Name                 Url                                Bearer Token Env Var  Status   Auth       \nopenaiDeveloperDocs  https://developers.openai.com/mcp  -                     enabled  Unsupported"
+  },
+  "secrets_redacted": true
+}

@@ -1,0 +1,39 @@
+{
+  "schema": "ajax.skills_ingest.leann_index.v1",
+  "ts_utc": "20260227-212319",
+  "index_name": "antigravity_skills_safe",
+  "build_command": "leann build antigravity_skills_safe --docs .leann/sources/skills/antigravity --include-hidden --file-types .md --force",
+  "verification": {
+    "index_dir_exists": true,
+    "meta_path": ".leann/indexes/antigravity_skills_safe/documents.leann.meta.json",
+    "passages_path": ".leann/indexes/antigravity_skills_safe/documents.leann.passages.jsonl",
+    "passage_count": 294,
+    "leann_list_timeout_seconds": 30,
+    "leann_list_timeout_observed": true
+  },
+  "meta": {
+    "version": "1.0",
+    "backend_name": "hnsw",
+    "embedding_model": "facebook/contriever",
+    "dimensions": 768,
+    "backend_kwargs": {
+      "graph_degree": 32,
+      "complexity": 64,
+      "is_compact": true,
+      "is_recompute": true,
+      "num_threads": 1
+    },
+    "embedding_mode": "sentence-transformers",
+    "passage_sources": [
+      {
+        "type": "jsonl",
+        "path": "documents.leann.passages.jsonl",
+        "index_path": "documents.leann.passages.idx",
+        "path_relative": "documents.leann.passages.jsonl",
+        "index_path_relative": "documents.leann.passages.idx"
+      }
+    ],
+    "is_compact": true,
+    "is_pruned": true
+  }
+}
