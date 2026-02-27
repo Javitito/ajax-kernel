@@ -7923,8 +7923,14 @@ def main(argv=None) -> int:
     )
     p_mv_status.set_defaults(func=cmd_motivo_vital)
 
-    p_report = sub.add_parser("report", help="Genera un reporte diario (Gym + Heartbeat + MV).")
+    p_report = sub.add_parser("report", help="Genera reportes read-only.")
     p_report.set_defaults(func=cmd_report)
+    report_sub = p_report.add_subparsers(dest="report_cmd")
+    p_report_daily_brief = report_sub.add_parser(
+        "daily-brief",
+        help="Concierge daily brief read-only (audits + gaps + LEANN + propuestas).",
+    )
+    p_report_daily_brief.set_defaults(func=cmd_report_daily_brief)
 
     args = parser.parse_args(argv)
     if args.command == "health":
@@ -7954,6 +7960,25 @@ def cmd_report(args: argparse.Namespace) -> int:
     persist_report(report, heartbeat or {}, gym or {})
     print(report)
     return 0
+
+
+def cmd_report_daily_brief(args: argparse.Namespace) -> int:
+    _ = args
+    try:
+        from agency.reporting.daily_brief_concierge import generate_daily_brief
+    except Exception as exc:
+        print(f"Daily brief no disponible: {exc}", file=sys.stderr)
+        return 3
+    result = generate_daily_brief(ROOT)
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print(f"md: {result.get('md_path')}")
+    print(f"json: {result.get('json_path')}")
+    print(f"receipt: {result.get('receipt_path')}")
+    try:
+        return int(result.get("exit_code", 2))
+    except Exception:
+        return 2
 
 
 if __name__ == "__main__":
