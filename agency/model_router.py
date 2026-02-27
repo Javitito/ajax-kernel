@@ -11,6 +11,13 @@ import yaml  # type: ignore
 
 _TIER_ORDER = ["cheap", "balanced", "premium"]
 _TIER_CANONICAL = {"cheap": "free", "balanced": "standard", "premium": "premium"}
+_COST_MODE_ALIASES = {
+    "cheap": "balanced",
+    "eco": "balanced",
+    "local": "emergency",
+    "standard": "balanced",
+    "premium_fast": "premium",
+}
 _TASK_ROLE_MAP = {
     "brain_plan": ("brain", "planner"),
     "brain_chat": ("brain", "chatter"),
@@ -121,7 +128,7 @@ def _load_status(path: Path) -> Dict[str, Any]:
 
 def _tier_allows(tier: str, cost_mode: str) -> bool:
     tier = (tier or "balanced").lower()
-    cost_mode = (cost_mode or "premium").lower()
+    cost_mode = _normalize_cost_mode((cost_mode or "premium").lower())
     if cost_mode == "emergency":
         if not _allow_tier_downgrade_on_emergency():
             return tier == "premium"
@@ -129,6 +136,13 @@ def _tier_allows(tier: str, cost_mode: str) -> bool:
     if cost_mode in {"balanced", "save_codex"}:
         return tier in {"cheap", "balanced"}
     return tier in {"cheap", "balanced", "premium"}  # premium mode
+
+
+def _normalize_cost_mode(raw: str) -> str:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return "premium"
+    return _COST_MODE_ALIASES.get(value, value)
 
 
 def _read_human_active_flag(base_path: Path) -> Optional[bool]:
@@ -213,8 +227,12 @@ def pick_model(
     cloud_first = task_kind.lower() in cloud_first_tasks
     raw_cost = (cost_mode or os.getenv("AJAX_COST_MODE") or "").strip()
     if not raw_cost:
-        raw_cost = _default_cost_mode(base_path)
-    cost_mode = raw_cost.strip().lower()
+        if task_kind.lower() == "vision_plan":
+            raw_cost = os.getenv("AJAX_VISION_DEFAULT_COST_MODE") or "eco"
+        else:
+            raw_cost = _default_cost_mode(base_path)
+    requested_cost_mode = raw_cost.strip().lower()
+    cost_mode = _normalize_cost_mode(requested_cost_mode)
     allow_local_text = _env_truthy("AJAX_ALLOW_LOCAL_TEXT") or cost_mode == "emergency"
     allow_local_vision = desired_role == "vision"
     allow_local_any = allow_local_text or allow_local_vision
@@ -236,6 +254,7 @@ def pick_model(
         "policy": {
             "mode": policy_mode,
             "budget_mode": cost_mode,
+            "requested_budget_mode": requested_cost_mode,
             "premium_rule": None,
             "fallback_reason": None,
             "allow_local_text": bool(allow_local_text),
@@ -560,6 +579,15 @@ def pick_model(
             )
         elif not candidates and premium_only:
             decision["policy"]["fallback_reason"] = "premium_only_blocked"
+        if not candidates and desired_role == "vision":
+            # Vision pulse must remain budget-aware: fallback to eco/local instead of crashing.
+            cost_mode = "balanced"
+            decision["policy"]["mode"] = "vision_budget_fallback"
+            decision["policy"]["budget_mode"] = cost_mode
+            decision["policy"]["fallback_reason"] = "vision_no_premium_provider"
+            candidates, entries = _evaluate_candidates(
+                include_local=include_local_initial, premium_only=False
+            )
     elif cost_mode == "emergency":
         premium_only = not _allow_tier_downgrade_on_emergency()
         candidates, entries = _evaluate_candidates(

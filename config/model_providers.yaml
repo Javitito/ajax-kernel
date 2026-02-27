@@ -22,9 +22,20 @@ providers:
     kind: http_openai
     base_url: "http://localhost:1235/v1"
     api_key_env: null
+    default_model: "lfm2-8b-a1b"
     vision_hints: ["vision", "vl"]
+    roles: ["brain", "council", "scout"]
     tier: "cheap"
-    modes: ["vision"]
+    modes: ["planner", "verifier", "chatter"]
+  lmstudio_vision:
+    kind: http_openai
+    base_url: "http://localhost:1235/v1"
+    api_key_env: null
+    default_model: "qwen/qwen3-vl-4b"
+    vision_hints: ["vision", "vl", "qwen"]
+    roles: ["vision"]
+    tier: "cheap"
+    modes: ["planner", "vision", "verifier"]
   qwen_cli:
     kind: cli
     command: ["qwen", "models"]
