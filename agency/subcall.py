@@ -227,6 +227,93 @@ def _parse_json_object_or_event_wrapped(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _normalize_cli_command_template(command: Any) -> List[str]:
+    if isinstance(command, str):
+        return [command]
+    if not isinstance(command, list):
+        return []
+    return [str(token) for token in command]
+
+
+def _resolve_cli_infer_command(cfg: Dict[str, Any]) -> List[str]:
+    return _normalize_cli_command_template(cfg.get("infer_command") or cfg.get("command") or [])
+
+
+def _resolve_cli_probe_command(cfg: Dict[str, Any]) -> List[str]:
+    return _normalize_cli_command_template(cfg.get("probe_command") or [])
+
+
+def _cli_command_has_prompt_placeholder(cfg: Dict[str, Any]) -> bool:
+    if str(cfg.get("kind") or "").strip().lower() != "cli":
+        return True
+    cmd_template = _resolve_cli_infer_command(cfg)
+    if not cmd_template:
+        return False
+    for token in cmd_template:
+        if "{prompt}" in str(token):
+            return True
+    return False
+
+
+def _run_cli_probe(provider: str, cfg: Dict[str, Any], *, root_dir: Path) -> Dict[str, Any]:
+    cmd_template = _resolve_cli_probe_command(cfg)
+    if not cmd_template:
+        return {"ok": True, "error": None, "latency_ms": 0, "cmd": None}
+
+    model_id = cfg.get("_selected_model") or cfg.get("default_model") or cfg.get("model")
+    cmd: List[str] = []
+    for token in cmd_template:
+        if token == "{model}":
+            cmd.append(str(model_id or ""))
+        elif token == "{prompt}":
+            cmd.append("ping")
+        else:
+            cmd.append(str(token))
+    if not cmd:
+        return {"ok": False, "error": "probe_command_missing", "latency_ms": 0, "cmd": ""}
+
+    env = os.environ.copy()
+    extra_env = cfg.get("env")
+    if isinstance(extra_env, dict):
+        for k, v in extra_env.items():
+            env[str(k)] = str(v)
+
+    cwd = cfg.get("workdir")
+    cwd_path = str((Path(root_dir) / str(cwd)).resolve()) if isinstance(cwd, str) and cwd.strip() else None
+    probe_timeout = float(cfg.get("probe_timeout_seconds") or 2.0)
+    probe_timeout = max(0.2, min(probe_timeout, 10.0))
+
+    started = _now_ts()
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=probe_timeout,
+            env=env,
+            cwd=cwd_path,
+            check=False,
+        )
+        latency_ms = int((_now_ts() - started) * 1000)
+        if proc.returncode != 0:
+            err = (proc.stderr or "").strip() or (proc.stdout or "").strip() or f"probe_rc_{proc.returncode}"
+            return {
+                "ok": False,
+                "error": f"cli_probe_rc_{proc.returncode}:{err[:200]}",
+                "latency_ms": latency_ms,
+                "cmd": " ".join(cmd),
+            }
+        return {"ok": True, "error": None, "latency_ms": latency_ms, "cmd": " ".join(cmd)}
+    except Exception as exc:
+        latency_ms = int((_now_ts() - started) * 1000)
+        return {
+            "ok": False,
+            "error": f"cli_probe_error:{type(exc).__name__}:{str(exc)[:200]}",
+            "latency_ms": latency_ms,
+            "cmd": " ".join(cmd),
+        }
+
+
 def _estimate_tokens(text: str) -> int:
     # Estimador conservador (no depende de tokenizers externos).
     raw = (text or "").strip()
@@ -358,22 +445,20 @@ def _default_call_provider(provider: str, cfg: Dict[str, Any], system_prompt: st
         return ProviderCallResult(text=text.strip(), tokens=_estimate_tokens(full_prompt) + _estimate_tokens(text))
 
     if kind == "cli":
-        cmd_template = cfg.get("command") or []
-        if isinstance(cmd_template, str):
-            cmd_template = [cmd_template]
+        cmd_template = _resolve_cli_infer_command(cfg)
         full_prompt = system_prompt.rstrip() + "\n\n" + user_prompt
         cmd: List[str] = []
-        use_stdin = False
         i = 0
         while i < len(cmd_template):
             token = cmd_template[i]
             next_token = cmd_template[i + 1] if i + 1 < len(cmd_template) else None
             if token in {"--prompt", "-p", "--prompt-file"} and next_token == "{prompt}":
-                use_stdin = True
+                cmd.append(str(token))
+                cmd.append(full_prompt)
                 i += 2
                 continue
             if token == "{prompt}":
-                use_stdin = True
+                cmd.append(full_prompt)
                 i += 1
                 continue
             if token == "{model}":
@@ -386,7 +471,7 @@ def _default_call_provider(provider: str, cfg: Dict[str, Any], system_prompt: st
             raise RuntimeError("cli_command_missing")
         proc = subprocess.run(
             cmd,
-            input=full_prompt if use_stdin else None,
+            input=None,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -706,6 +791,41 @@ def run_subcall(
             attempt_text: Optional[str] = None
             attempt_error: Optional[str] = None
             repaired = False
+
+            if str(cfg.get("kind") or "").strip().lower() == "cli":
+                probe = _run_cli_probe(provider, cfg, root_dir=root_dir)
+                if not bool(probe.get("ok", False)):
+                    ladder_tried.append(
+                        {
+                            "provider": provider,
+                            "ok": False,
+                            "error": "provider_probe_failed",
+                            "reason": "provider_probe_failed",
+                            "detail": "probe_command_failed",
+                            "probe_error": str(probe.get("error") or "")[:200],
+                            "probe_cmd": probe.get("cmd"),
+                            "latency_ms": int(probe.get("latency_ms") or 0),
+                            "tokens": 0,
+                            "repaired": False,
+                            "skipped": True,
+                        }
+                    )
+                    continue
+                if not _cli_command_has_prompt_placeholder(cfg):
+                    ladder_tried.append(
+                        {
+                            "provider": provider,
+                            "ok": False,
+                            "error": "incompatible_for_subcall",
+                            "reason": "incompatible_for_subcall",
+                            "detail": "command_has_no_prompt_placeholder",
+                            "latency_ms": 0,
+                            "tokens": 0,
+                            "repaired": False,
+                            "skipped": True,
+                        }
+                    )
+                    continue
 
             try:
                 res = caller(provider, cfg, system_prompt, user_prompt, json_mode)
