@@ -195,26 +195,51 @@ def run_bridge_doctor(
                 "command_source": command_source,
             }
     coverage_ok = not (configured_cli_providers > 0 and probed_count == 0)
-    payload_ok = bool(coverage_ok)
-    if any(
-        isinstance(entry, dict) and str(entry.get("status") or "").strip().upper() not in {"OK", "UP"}
-        for entry in results.values()
-    ):
-        payload_ok = False
+    warning_providers = sorted(
+        name
+        for name, entry in results.items()
+        if isinstance(entry, dict) and str(entry.get("status") or "").strip().upper() not in {"OK", "UP"}
+    )
     payload = {
         "schema": "ajax.bridge_doctor.v1",
         "ts": time.time(),
         "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time())),
-        "ok": payload_ok,
+        "ok": bool(coverage_ok),
         "summary": {
             "configured_cli_providers": configured_cli_providers,
             "probed_count": probed_count,
             "skipped_unprobed_count": skipped_unprobed_count,
             "coverage_ok": coverage_ok,
+            "warning_count": len(warning_providers),
         },
+        "warnings": warning_providers,
         "providers": results,
     }
     return payload
+
+
+def evaluate_bridge_health(payload: Dict[str, Any], *, strict: bool = False) -> Dict[str, Any]:
+    summary = payload.get("summary") if isinstance(payload, dict) else {}
+    summary = summary if isinstance(summary, dict) else {}
+    coverage_ok = bool(summary.get("coverage_ok"))
+    providers = payload.get("providers") if isinstance(payload, dict) else {}
+    providers = providers if isinstance(providers, dict) else {}
+    warning_providers = sorted(
+        name
+        for name, entry in providers.items()
+        if isinstance(entry, dict) and str(entry.get("status") or "").strip().upper() not in {"OK", "UP"}
+    )
+    if strict:
+        ok = coverage_ok and not warning_providers
+    else:
+        ok = coverage_ok
+    return {
+        "ok": bool(ok),
+        "exit_code": 0 if ok else 2,
+        "coverage_ok": coverage_ok,
+        "warning_providers": warning_providers,
+        "strict": bool(strict),
+    }
 
 
 def persist_bridge_doctor(root_dir: Path, payload: Dict[str, Any]) -> Path:
