@@ -668,36 +668,61 @@ def run_subcall(
                 return True
         return False
 
-    def _eligible(provider: str) -> bool:
+    def _eligible(provider: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
         cfg_any = providers_cfg.get(provider)
         if not isinstance(cfg_any, dict):
-            return False
+            return False, None
         if cfg_any.get("disabled"):
-            return False
+            return False, None
         if caller_provider and _is_codex(caller_provider) and _is_codex(provider):
             nonlocal blocked, blocked_reason
             blocked = True
             blocked_reason = blocked_reason or "self_call_guard"
-            return False
+            return False, None
         if cost_mode == "save_codex" and _exclude_by_prefix(provider) and not allow_premium_subcall:
-            return False
+            return False, None
         if role_n in {"scout", "reviewer", "summarizer"} and not allow_premium_subcall and _is_codex(provider):
-            return False
+            return False, None
         roles = cfg_any.get("roles") or []
         roles_l = [str(r).strip().lower() for r in roles] if isinstance(roles, list) else []
         if provider_role not in roles_l:
-            return False
+            return False, None
         tier_cfg = str(cfg_any.get("tier") or "balanced").strip().lower()
         if cost_mode in {"balanced", "save_codex"} and tier_cfg == "premium":
             if cost_mode == "save_codex" and allow_premium_subcall:
                 pass
             else:
-                return False
+                return False, None
         if read_ledger and provider not in ok_set:
-            return False
-        return True
+            av = availability.get(provider)
+            if isinstance(av, dict):
+                cooldown_until = av.get("cooldown_until")
+                if cooldown_until:
+                    return False, {
+                        "provider": provider,
+                        "ok": False,
+                        "error": "cooldown_active",
+                        "reason": "cooldown_active",
+                        "detail": f"cooldown_until={cooldown_until}",
+                        "latency_ms": 0,
+                        "tokens": 0,
+                        "repaired": False,
+                        "skipped": True,
+                    }
+            return False, None
+        return True, None
 
-    eligible_ladder = [p for p in ladder if _eligible(p)]
+    pre_skips: List[Dict[str, Any]] = []
+    eligible_ladder: List[str] = []
+    for provider in ladder:
+        eligible, skip_entry = _eligible(provider)
+        if eligible:
+            eligible_ladder.append(provider)
+            continue
+        if isinstance(skip_entry, dict):
+            pre_skips.append(skip_entry)
+
+    ladder_tried.extend(pre_skips)
 
     receipt_payload: Dict[str, Any] = {
         "schema": "ajax.subcall_receipt.v1",
@@ -762,7 +787,7 @@ def run_subcall(
                 tier=tier_u,
                 role=role_n,
                 provider_chosen=None,
-                ladder_tried=[],
+                ladder_tried=ladder_tried,
                 tokens=0,
                 output_text=None,
                 output_json=None,
