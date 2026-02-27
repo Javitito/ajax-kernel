@@ -6022,33 +6022,33 @@ def cmd_doctor_providers(args: argparse.Namespace) -> int:
 
 def cmd_doctor_bridge(args: argparse.Namespace) -> int:
     try:
-        from agency.bridge_doctor import run_bridge_doctor, persist_bridge_doctor  # type: ignore
+        from agency.bridge_doctor import (
+            run_bridge_doctor,
+            persist_bridge_doctor,
+            evaluate_bridge_health,
+        )  # type: ignore
     except Exception as exc:
         print(f"Bridge doctor no disponible: {exc}", file=sys.stderr)
         return 3
     providers = args.providers or None
+    strict = bool(getattr(args, "strict", False))
     try:
         payload = run_bridge_doctor(ROOT, providers=providers, timeout_s=float(args.timeout))
     except Exception as exc:
         print(f"Fallo al ejecutar doctor bridge: {exc}", file=sys.stderr)
         return 2
     artifact = persist_bridge_doctor(ROOT, payload)
-    overall_ok = bool(payload.get("ok", True))
+    verdict = evaluate_bridge_health(payload, strict=strict)
     output = {
-        "ok": overall_ok,
+        "ok": bool(verdict.get("ok")),
+        "strict": strict,
+        "warnings": verdict.get("warning_providers", []),
         "artifact": str(artifact),
         "summary": payload.get("summary", {}),
         "providers": payload.get("providers", {}),
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
-    if not overall_ok:
-        return 1
-    if any(
-        isinstance(entry, dict) and entry.get("status") not in {"OK", "UP"}
-        for entry in output.get("providers", {}).values()
-    ):
-        return 1
-    return 0
+    return int(verdict.get("exit_code", 2))
 
 
 def cmd_doctor_leann(args: argparse.Namespace) -> int:
@@ -7739,6 +7739,11 @@ def main(argv=None) -> int:
     p_doctor_bridge.add_argument("--providers", nargs="*", help="Filtra providers CLI específicos.")
     p_doctor_bridge.add_argument(
         "--timeout", type=float, default=6.0, help="Timeout por probe (segundos)."
+    )
+    p_doctor_bridge.add_argument(
+        "--strict",
+        action="store_true",
+        help="Falla con exit 2 si detecta cualquier gap (coverage o provider warning).",
     )
     p_doctor_bridge.set_defaults(func=cmd_doctor_bridge)
     p_doctor_leann = doctor_sub.add_parser(
