@@ -24,6 +24,10 @@ jobs:
         run: |
           python -m compileall -q agency ajax ui
 
+      - name: Check Pseudocode Map refs
+        run: |
+          python scripts/ci/check_pseudocode_map_refs.py --root .
+
       - name: Tests
         run: |
           pytest -q

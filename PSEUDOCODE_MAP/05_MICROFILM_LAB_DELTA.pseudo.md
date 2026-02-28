@@ -1,13 +1,8 @@
-# Pseudocode Delta - Microfilm/LAB (2026-02-20)
+# 05 - Microfilm/LAB Delta (Legacy Absorbed)
 
-> Status: HISTORICO / DEPRECATED
->
-> Fuente canonica actual:
-> - [`PSEUDOCODE_MAP/README.md`](../PSEUDOCODE_MAP/README.md)
-> - [`PSEUDOCODE_MAP/05_MICROFILM_LAB_DELTA.pseudo.md`](../PSEUDOCODE_MAP/05_MICROFILM_LAB_DELTA.pseudo.md)
->
-> Este documento se conserva solo como historial. El contenido fue absorbido en
-> [`PSEUDOCODE_MAP/05_MICROFILM_LAB_DELTA.pseudo.md`](../PSEUDOCODE_MAP/05_MICROFILM_LAB_DELTA.pseudo.md).
+## Status
+- Source: absorbed from `docs/PSEUDOCODE_DELTA_MICROFILM_LAB_20260220.md`
+- Classification: legacy absorbed into canonical `PSEUDOCODE_MAP/`
 
 ## 1) Root resolution (CLI)
 
