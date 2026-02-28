@@ -20,6 +20,7 @@ SKIP_DIRS = {
     "node_modules",
     "artifacts",
     ".leann",
+    "tests",
     "tools/third_party",
 }
 
@@ -33,6 +34,9 @@ def _git_tracked_files(root: Path) -> List[Path]:
     for line in (proc.stdout or "").splitlines():
         text = line.strip()
         if text:
+            rel = text.replace("\\", "/")
+            if any(rel == d or rel.startswith(d + "/") for d in SKIP_DIRS):
+                continue
             out.append(root / text)
     return out
 
