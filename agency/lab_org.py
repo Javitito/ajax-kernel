@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agency.experiment_cancellation import get_experiment_record, is_experiment_cancelled
 from agency.explore_policy import dummy_display_ok, evaluate_explore_state, load_explore_policy, state_rules
 from agency.human_permission import read_human_permission_status
+from agency.concierge_brief import maybe_trigger_human_detected_brief
 from agency.lab_control import LabStateStore
 try:
     from agency.hunger import get_current_hunger
@@ -318,6 +319,21 @@ def lab_org_tick(
                 receipt["preemption_path"] = str(preempt_path)
             except Exception:
                 pass
+            try:
+                brief_res = maybe_trigger_human_detected_brief(root, now_ts=now)
+                receipt["daily_brief"] = {
+                    "status": brief_res.get("status"),
+                    "generated": bool(brief_res.get("generated")),
+                    "brief_json_path": brief_res.get("brief_json_path"),
+                    "brief_md_path": brief_res.get("brief_md_path"),
+                    "receipt_path": brief_res.get("receipt_path"),
+                }
+            except Exception as exc:
+                receipt["daily_brief"] = {
+                    "status": "error",
+                    "generated": False,
+                    "error": f"daily_brief_trigger_failed:{str(exc)[:200]}",
+                }
 
         manifest = _load_manifest(manifest_file)
         challenges = _normalize_challenges(manifest.get("micro_challenges"))
