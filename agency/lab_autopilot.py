@@ -685,14 +685,21 @@ def run_autopilot_daemon(
     daemon_dir = root / "artifacts" / "lab" / "autopilot"
     daemon_dir.mkdir(parents=True, exist_ok=True)
     pid_path = daemon_dir / "worker.pid"
-    heartbeat_path = daemon_dir / "heartbeat.json"
+    heartbeat_path = root / "artifacts" / "health" / "autopilot_heartbeat.json"
+    stopfile_path = root / "artifacts" / "lab" / "STOP_AUTOPILOT"
+    receipts_dir = root / "artifacts" / "receipts"
+    receipts_dir.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
 
     ticks = 0
     receipts: list[str] = []
     last_action = None
+    stop_reason = "unknown"
     try:
         while True:
+            if stopfile_path.exists():
+                stop_reason = "stopped_by_stopfile"
+                break
             tick_now = time.time()
             tick_opts = AutopilotTickOptions(
                 mode="daemon",
@@ -721,13 +728,19 @@ def run_autopilot_daemon(
             }
             _safe_write_json(heartbeat_path, heartbeat)
             if max_ticks > 0 and ticks >= max_ticks:
+                stop_reason = "max_ticks_reached"
                 break
-            time.sleep(max(1.0, float(interval_s)))
+            if stopfile_path.exists():
+                stop_reason = "stopped_by_stopfile"
+                break
+            time.sleep(max(0.0, float(interval_s)))
     finally:
         try:
             pid_path.unlink(missing_ok=True)
         except Exception:
             pass
+        if stop_reason == "unknown":
+            stop_reason = "loop_finished"
         done_hb = {
             "schema": "ajax.lab.autopilot.daemon_heartbeat.v0",
             "status": "STOPPED",
@@ -735,8 +748,27 @@ def run_autopilot_daemon(
             "ticks": ticks,
             "interval_s": float(interval_s),
             "last_action": last_action,
+            "stop_reason": stop_reason,
         }
         _safe_write_json(heartbeat_path, done_hb)
+    daemon_receipt = {
+        "schema": "ajax.lab.autopilot.daemon_receipt.v1",
+        "ts_utc": _utc_now(),
+        "ok": True,
+        "mode": "daemon",
+        "ticks": ticks,
+        "interval_s": float(interval_s),
+        "last_action": last_action,
+        "tick_receipts": receipts,
+        "stop_reason": stop_reason,
+        "stopfile_path": _relpath(root, stopfile_path),
+        "stopfile_exists": stopfile_path.exists(),
+        "heartbeat_path": _relpath(root, heartbeat_path),
+    }
+    daemon_receipt_path = receipts_dir / f"lab_autopilot_daemon_{_ts_label()}.json"
+    _safe_write_json(daemon_receipt_path, daemon_receipt)
+    daemon_receipt["receipt_path"] = _relpath(root, daemon_receipt_path)
+    _safe_write_json(daemon_receipt_path, daemon_receipt)
 
     return {
         "ok": True,
@@ -745,6 +777,8 @@ def run_autopilot_daemon(
         "interval_s": float(interval_s),
         "last_action": last_action,
         "tick_receipts": receipts,
+        "stop_reason": stop_reason,
+        "daemon_receipt_path": _relpath(root, daemon_receipt_path),
         "pid_path": _relpath(root, pid_path),
         "heartbeat_path": _relpath(root, heartbeat_path),
     }
