@@ -631,6 +631,13 @@ def run_autopilot_tick(root_dir: Path, *, options: AutopilotTickOptions, now_ts:
 
     receipt_payload["tick_receipt_path"] = _relpath(root, tick_receipt_path)
     receipt_payload["lab_org_receipt_path"] = _relpath(root, lab_org_receipt_path)
+    artifacts_written = [
+        str(receipt_payload["tick_receipt_path"]),
+        str(receipt_payload["lab_org_receipt_path"]),
+    ]
+    if isinstance(receipt_payload.get("result_path"), str):
+        artifacts_written.append(str(receipt_payload["result_path"]))
+    receipt_payload["artifacts_written"] = _dedupe_strings(artifacts_written)
     if receipt_payload["tick_receipt_path"] not in receipt_payload["evidence_refs"]:
         receipt_payload["evidence_refs"].append(str(receipt_payload["tick_receipt_path"]))
     if receipt_payload["lab_org_receipt_path"] not in receipt_payload["evidence_refs"]:
@@ -713,4 +720,3 @@ def run_autopilot_daemon(
         "pid_path": _relpath(root, pid_path),
         "heartbeat_path": _relpath(root, heartbeat_path),
     }
-
