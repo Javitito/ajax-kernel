@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from agency.lab_control import LabStateStore
+from agency.lab_session_anchor import validate_expected_session
 
 
 def _utc_now(ts: Optional[float] = None) -> str:
@@ -204,23 +205,43 @@ def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
             "rail": resolved_rail,
             "anchor_receipt_path": None,
         }
+    session_status = validate_expected_session(
+        root_dir,
+        required_rail=resolved_rail,
+        required_display="dummy",
+    )
+    if not bool(session_status.get("ok")):
+        return {
+            "ok": False,
+            "reason": str(session_status.get("reason") or "expected_session_invalid"),
+            "rail": resolved_rail,
+            "anchor_receipt_path": None,
+            "session_status": session_status,
+        }
     anchor = _run_anchor_preflight(root_dir, "lab")
     observed = anchor.get("observed") if isinstance(anchor.get("observed"), dict) else {}
     dummy_ok = bool(observed.get("display_target_is_dummy"))
     anchor_ok = bool(anchor.get("ok"))
     if not anchor_ok:
         mismatches = anchor.get("mismatches") if isinstance(anchor.get("mismatches"), list) else []
-        mismatch_code = None
-        if mismatches:
-            first = mismatches[0] if isinstance(mismatches[0], dict) else {}
-            mismatch_code = first.get("code")
-        return {
-            "ok": False,
-            "reason": str(mismatch_code or "anchor_preflight_blocked"),
-            "rail": resolved_rail,
-            "anchor_receipt_path": anchor.get("receipt_path"),
-            "anchor_payload": anchor,
-        }
+        non_ignored: list[Dict[str, Any]] = []
+        for item in mismatches:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "")
+            if code == "expected_session_missing":
+                continue
+            non_ignored.append(item)
+        if non_ignored:
+            first_code = str(non_ignored[0].get("code") or "anchor_preflight_blocked")
+            return {
+                "ok": False,
+                "reason": first_code,
+                "rail": resolved_rail,
+                "anchor_receipt_path": anchor.get("receipt_path"),
+                "anchor_payload": anchor,
+                "session_status": session_status,
+            }
     if not dummy_ok:
         return {
             "ok": False,
@@ -228,6 +249,7 @@ def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
             "rail": resolved_rail,
             "anchor_receipt_path": anchor.get("receipt_path"),
             "anchor_payload": anchor,
+            "session_status": session_status,
         }
     return {
         "ok": True,
@@ -235,6 +257,7 @@ def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
         "rail": resolved_rail,
         "anchor_receipt_path": anchor.get("receipt_path"),
         "anchor_payload": anchor,
+        "session_status": session_status,
     }
 
 

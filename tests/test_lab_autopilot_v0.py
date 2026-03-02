@@ -29,6 +29,23 @@ def _patch_anchor(monkeypatch, root: Path, *, ok: bool = True, dummy: bool = Tru
 
     monkeypatch.setattr(autopilot_mod, "_run_anchor_preflight", _fake_anchor, raising=True)
 
+    def _fake_session_status(root_dir: Path, **kwargs) -> dict:
+        return {
+            "schema": "ajax.lab.session_status.v0",
+            "ts_utc": "2026-03-02T00:00:00Z",
+            "ok": True,
+            "reason": "session_valid",
+            "exists": True,
+            "path": str(root / "artifacts" / "lab" / "session" / "expected_session.json"),
+            "rail": "lab",
+            "display_target": "dummy",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "token_hash_prefix": "deadbeef1234",
+            "invalid_reasons": [],
+        }
+
+    monkeypatch.setattr(autopilot_mod, "validate_expected_session", _fake_session_status, raising=True)
+
 
 def _fresh_status(root: Path, *, updated_ts: float) -> Path:
     status_path = root / "artifacts" / "health" / "providers_status.json"
@@ -176,4 +193,3 @@ def test_autopilot_once_writes_result_when_executed(monkeypatch, tmp_path: Path)
     result_rel = str(payload.get("result_path") or "")
     assert result_rel
     assert (tmp_path / result_rel).exists()
-
