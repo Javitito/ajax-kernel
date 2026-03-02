@@ -33,6 +33,20 @@ except Exception:
     CrystallizationEngine = None  # type: ignore
     CrystallizationError = RuntimeError  # type: ignore
 try:
+    from agency.topology_doctor import run_topology_doctor
+except Exception:
+    run_topology_doctor = None  # type: ignore
+try:
+    from agency.lab_autopilot import (
+        AutopilotTickOptions,
+        run_autopilot_tick,
+        run_autopilot_daemon,
+    )
+except Exception:
+    AutopilotTickOptions = None  # type: ignore
+    run_autopilot_tick = None  # type: ignore
+    run_autopilot_daemon = None  # type: ignore
+try:
     from agency.voice import Voice
 except Exception:
     Voice = None  # type: ignore
@@ -6193,6 +6207,32 @@ def cmd_doctor_leann(args: argparse.Namespace) -> int:
     return 0 if ok else 2
 
 
+def cmd_doctor_topology(args: argparse.Namespace) -> int:
+    if run_topology_doctor is None:
+        print("Topology doctor no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        payload, receipt_path = run_topology_doctor(kernel_root=ROOT, cwd=Path.cwd())
+    except Exception as exc:
+        print(f"Fallo al ejecutar doctor topology: {exc}", file=sys.stderr)
+        return 2
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print("Topology Doctor")
+    print(f"git_toplevel_current: {payload.get('git_toplevel_current')}")
+    print(f"git_toplevel_kernel: {payload.get('git_toplevel_kernel')}")
+    print(f"ajax_home_candidate: {(payload.get('paths') or {}).get('ajax_home_candidate')}")
+    print(f"ajax_kernel: {(payload.get('paths') or {}).get('ajax_kernel')}")
+    print(f"location: {payload.get('location')} reason: {payload.get('reason')}")
+    for warn in payload.get("warnings") or []:
+        print(f"warning: {warn}")
+    recommended = payload.get("recommended") if isinstance(payload.get("recommended"), dict) else {}
+    print(f"recommended_command: {recommended.get('full')}")
+    print(f"receipt: {receipt_path}")
+    return 0
+
+
 def _find_latest_doctor_artifact(root: Path) -> Optional[Path]:
     directory = root / "artifacts" / "health" / "providers"
     if not directory.exists():
@@ -7133,6 +7173,41 @@ def cmd_whereami(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lab_autopilot(args: argparse.Namespace) -> int:
+    if AutopilotTickOptions is None or run_autopilot_tick is None or run_autopilot_daemon is None:
+        print("LAB autopilot no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    mode = "once"
+    if bool(getattr(args, "dry_run", False)):
+        mode = "dry-run"
+    elif bool(getattr(args, "daemon", False)):
+        mode = "daemon"
+    elif bool(getattr(args, "once", False)):
+        mode = "once"
+    options = AutopilotTickOptions(
+        mode=mode,
+        absence_min=float(getattr(args, "absence_min", 10.0)),
+        providers_stale_min=float(getattr(args, "providers_stale_min", 60.0)),
+        rail=getattr(args, "rail", None),
+        interactive=None,
+        allow_filesystem_basic=bool(getattr(args, "allow_filesystem_basic", True)),
+        allow_queue_housekeeping=bool(getattr(args, "allow_queue_housekeeping", True)),
+        require_premium=False,
+    )
+    if mode == "daemon":
+        payload = run_autopilot_daemon(
+            ROOT,
+            options=options,
+            interval_s=float(getattr(args, "interval_s", 1800.0)),
+            max_ticks=int(getattr(args, "max_ticks", 0) or 0),
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if bool(payload.get("ok")) else 2
+    payload = run_autopilot_tick(ROOT, options=options)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if str(payload.get("action")) in {"EXECUTED", "NOOP"} else 2
+
+
 def cmd_lab_init(args: argparse.Namespace) -> int:
     try:
         root_dir = _detect_repo_root(getattr(args, "root", None))
@@ -7530,6 +7605,56 @@ def main(argv=None) -> int:
     p_lab_init.add_argument("--driver-url", help="Override URL del driver LAB al arrancar.")
     p_lab_init.add_argument("--worker-id", help="Override ID del worker al arrancar.")
     p_lab_init.set_defaults(func=cmd_lab_init)
+    p_lab_autopilot = lab_sub.add_parser(
+        "autopilot",
+        help="LAB Autopilot v0 (gates fail-closed + micro-work-item SAFE).",
+    )
+    autopilot_mode = p_lab_autopilot.add_mutually_exclusive_group()
+    autopilot_mode.add_argument("--dry-run", action="store_true", help="Planifica tick sin actuar.")
+    autopilot_mode.add_argument("--once", action="store_true", help="Ejecuta exactamente un tick.")
+    autopilot_mode.add_argument("--daemon", action="store_true", help="Loop periódico de ticks.")
+    p_lab_autopilot.add_argument(
+        "--interval-s",
+        type=float,
+        default=1800.0,
+        help="Intervalo de ticks en daemon (default 1800s).",
+    )
+    p_lab_autopilot.add_argument(
+        "--max-ticks",
+        type=int,
+        default=0,
+        help="Corta daemon tras N ticks (0 = sin límite).",
+    )
+    p_lab_autopilot.add_argument(
+        "--absence-min",
+        type=float,
+        default=10.0,
+        help="Ausencia mínima requerida para gate humana (minutos).",
+    )
+    p_lab_autopilot.add_argument(
+        "--providers-stale-min",
+        type=float,
+        default=60.0,
+        help="Edad mínima para considerar stale providers_status (minutos).",
+    )
+    p_lab_autopilot.add_argument("--rail", choices=["lab", "prod"], help="Rail explícito.")
+    p_lab_autopilot.add_argument(
+        "--no-filesystem-basic",
+        dest="allow_filesystem_basic",
+        action="store_false",
+        help="Desactiva work-item filesystem_basic.",
+    )
+    p_lab_autopilot.add_argument(
+        "--no-queue-housekeeping",
+        dest="allow_queue_housekeeping",
+        action="store_false",
+        help="Desactiva work-item lab_queue_housekeeping.",
+    )
+    p_lab_autopilot.set_defaults(
+        func=cmd_lab_autopilot,
+        allow_filesystem_basic=True,
+        allow_queue_housekeeping=True,
+    )
     p_lab_start = lab_sub.add_parser("start", help="Arranca el LAB worker.")
     p_lab_start.add_argument("--root", help="Override de repo_root (AJAX_HOME).")
     p_lab_start.add_argument("--driver-url", help="Override URL del driver LAB.")
@@ -7750,6 +7875,11 @@ def main(argv=None) -> int:
         "leann", help="Verifica LEANN (keys, indice, query base)."
     )
     p_doctor_leann.set_defaults(func=cmd_doctor_leann)
+    p_doctor_topology = doctor_sub.add_parser(
+        "topology", help="Detecta topología ROOT vs ajax-kernel y recomienda cwd."
+    )
+    p_doctor_topology.add_argument("--json", action="store_true", help="Imprime payload JSON completo.")
+    p_doctor_topology.set_defaults(func=cmd_doctor_topology)
     p_incident = sub.add_parser("incident", help="Gestión manual de incidentes.")
     incident_sub = p_incident.add_subparsers(dest="incident_cmd", required=True)
     p_incident_open = incident_sub.add_parser(
