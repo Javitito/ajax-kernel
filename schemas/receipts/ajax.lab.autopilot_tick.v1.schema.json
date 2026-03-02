@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "required": [
+    "schema",
+    "ts_utc",
+    "mode",
+    "gates",
+    "action",
+    "evidence_refs",
+    "next_hint"
+  ],
+  "anyOf": [
+    {
+      "properties": {
+        "schema": {
+          "const": "ajax.lab.autopilot_tick.v1"
+        }
+      },
+      "required": [
+        "artifacts_written"
+      ]
+    },
+    {
+      "properties": {
+        "schema": {
+          "const": "ajax.lab.autopilot_tick.v0"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schema": {
+      "enum": [
+        "ajax.lab.autopilot_tick.v1",
+        "ajax.lab.autopilot_tick.v0"
+      ]
+    },
+    "ts_utc": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "gates": {
+      "type": "object"
+    },
+    "selected_work_item": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "action": {
+      "enum": [
+        "EXECUTED",
+        "NOOP",
+        "BLOCKED"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_hint": {
+      "type": "string"
+    },
+    "artifacts_written": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

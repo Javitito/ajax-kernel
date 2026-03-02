@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "required": [
+    "schema",
+    "ts_utc",
+    "ok",
+    "reason",
+    "location"
+  ],
+  "properties": {
+    "schema": {
+      "enum": [
+        "ajax.topology_doctor.v0",
+        "ajax.topology_doctor.v1"
+      ]
+    },
+    "ts_utc": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "location": {
+      "type": "string"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
