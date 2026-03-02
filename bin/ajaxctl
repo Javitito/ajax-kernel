@@ -7200,6 +7200,7 @@ def cmd_lab_autopilot(args: argparse.Namespace) -> int:
         providers_stale_min=float(getattr(args, "providers_stale_min", 60.0)),
         rail=getattr(args, "rail", None),
         interactive=None,
+        allow_providers_probe_refresh=bool(getattr(args, "allow_providers_probe_refresh", True)),
         allow_filesystem_basic=bool(getattr(args, "allow_filesystem_basic", True)),
         allow_queue_housekeeping=bool(getattr(args, "allow_queue_housekeeping", True)),
         require_premium=False,
@@ -7708,6 +7709,12 @@ def main(argv=None) -> int:
     )
     p_lab_autopilot.add_argument("--rail", choices=["lab", "prod"], help="Rail explícito.")
     p_lab_autopilot.add_argument(
+        "--no-providers-probe-refresh",
+        dest="allow_providers_probe_refresh",
+        action="store_false",
+        help="Desactiva work-item providers_probe_refresh.",
+    )
+    p_lab_autopilot.add_argument(
         "--no-filesystem-basic",
         dest="allow_filesystem_basic",
         action="store_false",
@@ -7721,6 +7728,7 @@ def main(argv=None) -> int:
     )
     p_lab_autopilot.set_defaults(
         func=cmd_lab_autopilot,
+        allow_providers_probe_refresh=True,
         allow_filesystem_basic=True,
         allow_queue_housekeeping=True,
     )

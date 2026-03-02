@@ -29,6 +29,8 @@ def _patch_anchor(monkeypatch, root: Path, *, ok: bool = True, dummy: bool = Tru
 
     monkeypatch.setattr(autopilot_mod, "_run_anchor_preflight", _fake_anchor, raising=True)
 
+    session_display = "dummy" if dummy else "primary"
+
     def _fake_session_status(root_dir: Path, **kwargs) -> dict:
         return {
             "schema": "ajax.lab.session_status.v0",
@@ -38,7 +40,7 @@ def _patch_anchor(monkeypatch, root: Path, *, ok: bool = True, dummy: bool = Tru
             "exists": True,
             "path": str(root / "artifacts" / "lab" / "session" / "expected_session.json"),
             "rail": "lab",
-            "display_target": "dummy",
+            "display_target": session_display,
             "expires_at": "2099-01-01T00:00:00Z",
             "token_hash_prefix": "deadbeef1234",
             "invalid_reasons": [],
@@ -123,6 +125,7 @@ def test_autopilot_noop_when_no_safe_items(monkeypatch, tmp_path: Path) -> None:
     options = AutopilotTickOptions(
         mode="once",
         interactive=False,
+        allow_providers_probe_refresh=False,
         providers_stale_min=60.0,
         allow_filesystem_basic=False,
         allow_queue_housekeeping=False,
@@ -134,21 +137,12 @@ def test_autopilot_noop_when_no_safe_items(monkeypatch, tmp_path: Path) -> None:
 
 def test_autopilot_executes_providers_probe_refresh_when_stale(monkeypatch, tmp_path: Path) -> None:
     _patch_anchor(monkeypatch, tmp_path, ok=True, dummy=True)
-    status_path = _fresh_status(tmp_path, updated_ts=1_000.0)
-
-    def _fake_refresh(root_dir: Path) -> dict:
-        doc = json.loads(status_path.read_text(encoding="utf-8"))
-        doc["updated_ts"] = 1_800_000_610.0
-        doc["updated_utc"] = "2026-03-02T00:10:10Z"
-        _write_json(status_path, doc)
-        return {"ok": True, "status_refresh": {"ok": True}, "ledger_error": None, "evidence_refs": [str(status_path)]}
-
-    monkeypatch.setattr(autopilot_mod, "_refresh_providers_probe", _fake_refresh, raising=True)
+    _fresh_status(tmp_path, updated_ts=1_000.0)
     options = AutopilotTickOptions(
         mode="once",
         interactive=False,
         providers_stale_min=1.0,
-        allow_filesystem_basic=True,
+        allow_filesystem_basic=False,
         allow_queue_housekeeping=False,
     )
     payload = run_autopilot_tick(tmp_path, options=options, now_ts=1_800_000_600.0)
