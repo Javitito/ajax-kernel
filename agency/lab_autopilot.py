@@ -548,6 +548,30 @@ def _write_lab_org_tick_receipt(root_dir: Path, *, now_ts: float, receipt: Dict[
     return out_path
 
 
+def _update_soak_status(root_dir: Path, *, now_ts: float, action: str, gates: Dict[str, Any]) -> Dict[str, Any]:
+    status_path = root_dir / "artifacts" / "soak" / "status.json"
+    if not status_path.exists():
+        return {
+            "updated": False,
+            "path": str(status_path),
+            "hint": "soak_status_missing",
+        }
+    doc = _safe_read_json(status_path) or {}
+    gate_summary: Dict[str, Any] = {}
+    for key, gate in gates.items():
+        if isinstance(gate, dict):
+            gate_summary[key] = gate.get("reason")
+    doc["last_tick_ts"] = _utc_now(now_ts)
+    doc["last_action"] = action
+    doc["last_gate_summary"] = gate_summary
+    _safe_write_json(status_path, doc)
+    return {
+        "updated": True,
+        "path": str(status_path),
+        "hint": None,
+    }
+
+
 @dataclass
 class AutopilotTickOptions:
     mode: str = "once"
@@ -631,6 +655,16 @@ def run_autopilot_tick(root_dir: Path, *, options: AutopilotTickOptions, now_ts:
             action = "BLOCKED"
             next_hint = f"Execution failed verify: {execution.get('summary')}"
 
+    soak_update = _update_soak_status(root, now_ts=now, action=action, gates=gates)
+    if bool(soak_update.get("updated")):
+        soak_path = soak_update.get("path")
+        if isinstance(soak_path, str) and soak_path:
+            evidence_abs.append(Path(soak_path))
+    else:
+        hint = str(soak_update.get("hint") or "")
+        if hint == "soak_status_missing":
+            next_hint = f"{next_hint} (soak status missing: artifacts/soak/status.json)"
+
     evidence_rel = _dedupe_strings(
         [rel for rel in (_relpath(root, p) for p in evidence_abs) if isinstance(rel, str) and rel]
     )
@@ -644,6 +678,7 @@ def run_autopilot_tick(root_dir: Path, *, options: AutopilotTickOptions, now_ts:
         "evidence_refs": evidence_rel,
         "next_hint": next_hint,
         "preflight": diagnostics,
+        "soak_update": soak_update,
     }
     if execution is not None:
         receipt_payload["execution"] = execution
