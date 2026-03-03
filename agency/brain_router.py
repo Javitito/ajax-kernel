@@ -10,9 +10,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class AllBrainsFailed(RuntimeError):
-    def __init__(self, errors: List[str]) -> None:
+    def __init__(self, errors: List[str], *, reason: str = "all_brains_failed") -> None:
         super().__init__("all_brains_failed")
         self.errors = errors
+        self.reason = reason
 
 
 class TemporaryBrainFailure(RuntimeError):
@@ -73,8 +74,41 @@ class BrainRouter:
             "timeout",
             "timed out",
             "too many requests",
+            "provider_lock_violation",
         ]
         return any(tok in msg for tok in transient_tokens)
+
+    def _is_local_provider(self, name: str, cfg: Dict[str, Any]) -> bool:
+        if "lmstudio" in str(name or "").strip().lower() or "ollama" in str(name or "").strip().lower():
+            return True
+        if not isinstance(cfg, dict):
+            return False
+        kind = str(cfg.get("kind") or "").strip().lower()
+        if kind == "static":
+            return True
+        base_url = cfg.get("base_url")
+        if isinstance(base_url, str):
+            url = base_url.strip().lower()
+            if "localhost" in url or "127.0.0.1" in url:
+                return True
+        return False
+
+    def _should_try_local_fallback(self, exc: Exception, *, provider_name: str, cfg: Dict[str, Any]) -> bool:
+        if self._is_local_provider(provider_name, cfg):
+            return False
+        msg = str(exc).lower()
+        code = str(getattr(exc, "error_code", "") or "").strip().lower()
+        tokens = {
+            "429",
+            "rate limit",
+            "rate_limit",
+            "quota",
+            "timeout",
+            "timed out",
+            "provider_lock_violation",
+        }
+        code_tokens = {"429_tpm", "quota_exhausted", "timeout", "provider_lock_violation"}
+        return any(tok in msg for tok in tokens) or code in code_tokens
 
     def _is_contract_error(self, exc: Exception) -> bool:
         msg = str(exc).lower()
@@ -119,180 +153,263 @@ class BrainRouter:
             providers = ordered
 
         attempts_used = 0
-        for name, cfg in providers:
-            if name in exclude:
-                continue
-            if isinstance(max_attempts, int) and max_attempts > 0 and attempts_used >= max_attempts:
-                break
-            try:
-                self.log.info("BrainRouter: trying provider=%s", name)
-            except Exception:
-                pass
-            started = time.time()
-            try:
-                attempts_used += 1
-                plan = caller(name, cfg, prompt_system, prompt_user, meta)
-                if not isinstance(plan, dict):
-                    raise ValueError("brain_output no es un dict")
-                
-                # Éxito real-time
-                if self.ledger:
-                    try:
-                        self.ledger.record_success(name, "brain")
-                    except Exception:
-                        pass
+        local_fallback_requested = False
 
-                if not plan.get("steps"):
-                    # Deterministic contract repair pass (same provider, once):
-                    # ask for strict schema and non-empty steps with per-step success_spec.
-                    repair_meta = dict(meta or {})
-                    if not repair_meta.get("contract_repair_attempted"):
-                        repair_meta["contract_repair_attempted"] = True
-                        repair_user = (
-                            prompt_user.rstrip()
-                            + "\n\nReturn plan strictly following the schema; steps must be NON-EMPTY; "
-                            + "every step MUST include success_spec (EFE); every step MUST set on_fail='abort'. JSON only. "
-                            + "If you cannot produce a plan, return JSON with steps empty and include no_plan_reason."
-                        )
-                        plan = caller(name, cfg, prompt_system, repair_user, repair_meta)
-                        if not isinstance(plan, dict):
-                            raise ValueError("brain_output no es un dict")
-                    if not plan.get("steps"):
-                        raise BrainProviderError(
-                            "empty_plan",
-                            error_code="empty_plan",
-                            error_detail="empty_plan",
-                            raw_plan_excerpt=str((plan or {}).get("_raw_plan_excerpt") or "")[:500],
-                            stage="normalize",
-                        )
-                timings = None
-                if isinstance(plan, dict):
-                    timings = plan.get("_timings") if isinstance(plan.get("_timings"), dict) else None
-                    if timings is not None:
-                        try:
-                            plan.pop("_timings", None)
-                        except Exception:
-                            pass
-                if attempt_collector is not None:
-                    attempt_collector.append(
-                        {
-                            "role": "brain",
-                            "id": name,
-                            "provider": name,
-                            "model": cfg.get("_selected_model") or cfg.get("default_model") or cfg.get("model"),
-                            "tier": cfg.get("tier"),
-                            "ok": True,
-                            "result": "ok",
-                            "stage": "parse",
-                            "raw_plan_excerpt": (plan.get("_raw_plan_excerpt") if isinstance(plan, dict) else None),
-                            "latency_ms": int((time.time() - started) * 1000),
-                            "ts": started,
-                            "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
-                            "t_start": timings.get("t_start") if isinstance(timings, dict) else None,
-                            "t_connect_ok": timings.get("t_connect_ok") if isinstance(timings, dict) else None,
-                            "t_first_output": timings.get("t_first_output") if isinstance(timings, dict) else None,
-                            "t_last_output": timings.get("t_last_output") if isinstance(timings, dict) else None,
-                            "t_end": timings.get("t_end") if isinstance(timings, dict) else None,
-                            "timeout_kind": timings.get("timeout_kind") if isinstance(timings, dict) else "NONE",
-                            "client_abort": timings.get("client_abort") if isinstance(timings, dict) else None,
-                            "exit_code": timings.get("exit_code") if isinstance(timings, dict) else None,
-                            "stderr_tail": timings.get("stderr_tail") if isinstance(timings, dict) else None,
-                            "bytes_rx": timings.get("bytes_rx") if isinstance(timings, dict) else None,
-                            "tokens_rx": timings.get("tokens_rx") if isinstance(timings, dict) else None,
-                        }
-                    )
-                return plan
-            except Exception as exc:
-                attempts_used += 0
-                msg = str(exc)
-                error_code = getattr(exc, "error_code", None)
-                error_detail = getattr(exc, "error_detail", None)
-                stderr_excerpt = getattr(exc, "stderr_excerpt", None)
-                timeout_s = getattr(exc, "timeout_s", None)
-                parse_error = bool(getattr(exc, "parse_error", False))
-                raw_plan_excerpt = getattr(exc, "raw_plan_excerpt", None)
-                stage = getattr(exc, "stage", None)
-                if not error_code:
-                    msg_lower = msg.lower()
-                    if msg_lower.startswith("brain_http_"):
-                        error_code = msg_lower.split(":", 1)[0].replace("brain_", "")
-                    elif msg_lower.startswith("cli_rc_"):
-                        error_code = "cli_rc"
-                    elif msg_lower.startswith("cli_failed"):
-                        error_code = "cli_failed"
-                    elif "auth_missing" in msg_lower:
-                        error_code = "auth_missing"
-                    elif "auth_expired" in msg_lower:
-                        error_code = "auth_expired"
-                    elif "timeout" in msg_lower:
-                        error_code = "timeout"
-                    elif "json" in msg_lower or "parse" in msg_lower:
-                        error_code = "parse_error"
-                    elif "empty_plan" in msg_lower:
-                        error_code = "empty_plan"
-                    else:
-                        error_code = "unknown"
-                if not error_detail:
-                    error_detail = msg
-                timings = getattr(exc, "timings", None)
-                if attempt_collector is not None:
-                    attempt_collector.append(
-                        {
-                            "role": "brain",
-                            "id": name,
-                            "provider": name,
-                            "model": cfg.get("_selected_model") or cfg.get("default_model") or cfg.get("model"),
-                            "tier": cfg.get("tier"),
-                            "ok": False,
-                            "result": msg,
-                            "error_code": error_code,
-                            "error_detail": error_detail,
-                            "stderr_excerpt": stderr_excerpt,
-                            "timeout_s": timeout_s,
-                            "parse_error": parse_error,
-                            "raw_plan_excerpt": raw_plan_excerpt,
-                            "stage": stage or ("parse" if parse_error else ("normalize" if error_code == "empty_plan" else None)),
-                            "latency_ms": int((time.time() - started) * 1000),
-                            "transient": self._is_transient(exc) or self._is_contract_error(exc),
-                            "ts": started,
-                            "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
-                            "t_start": timings.get("t_start") if isinstance(timings, dict) else None,
-                            "t_connect_ok": timings.get("t_connect_ok") if isinstance(timings, dict) else None,
-                            "t_first_output": timings.get("t_first_output") if isinstance(timings, dict) else None,
-                            "t_last_output": timings.get("t_last_output") if isinstance(timings, dict) else None,
-                            "t_end": timings.get("t_end") if isinstance(timings, dict) else None,
-                            "timeout_kind": timings.get("timeout_kind") if isinstance(timings, dict) else None,
-                            "client_abort": timings.get("client_abort") if isinstance(timings, dict) else None,
-                            "exit_code": timings.get("exit_code") if isinstance(timings, dict) else None,
-                            "stderr_tail": timings.get("stderr_tail") if isinstance(timings, dict) else None,
-                            "bytes_rx": timings.get("bytes_rx") if isinstance(timings, dict) else None,
-                            "tokens_rx": timings.get("tokens_rx") if isinstance(timings, dict) else None,
-                        }
-                    )
-                if self._is_transient(exc) or self._is_contract_error(exc):
-                    # Fallo transitorio real-time
+        def _run_candidates(candidates: List[Tuple[str, Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+            nonlocal attempts_used, local_fallback_requested
+            for name, cfg in candidates:
+                if name in exclude:
+                    continue
+                if isinstance(max_attempts, int) and max_attempts > 0 and attempts_used >= max_attempts:
+                    break
+                try:
+                    self.log.info("BrainRouter: trying provider=%s", name)
+                except Exception:
+                    pass
+                started = time.time()
+                try:
+                    attempts_used += 1
+                    plan = caller(name, cfg, prompt_system, prompt_user, meta)
+                    if not isinstance(plan, dict):
+                        raise ValueError("brain_output no es un dict")
+
+                    # Éxito real-time
                     if self.ledger:
                         try:
-                            # Inferir razón (429, timeout, etc.)
-                            reason = "bridge_error"
-                            msg_l = str(exc).lower()
-                            if "429" in msg_l or "quota" in msg_l or "rate limit" in msg_l:
-                                reason = "quota_exhausted"
-                            elif "timeout" in msg_l:
-                                reason = "timeout"
-                            elif "auth" in msg_l:
-                                reason = "auth"
-                            self.ledger.record_failure(name, "brain", reason, detail=str(exc))
+                            self.ledger.record_success(name, "brain")
                         except Exception:
                             pass
-                    
-                    try:
-                        self.log.warning("BrainRouter: provider %s failed (%s); switching...", name, msg)
-                    except Exception:
-                        pass
-                    errors.append(f"{name}:{msg}")
+
+                    if not plan.get("steps"):
+                        # Deterministic contract repair pass (same provider, once):
+                        # ask for strict schema and non-empty steps with per-step success_spec.
+                        repair_meta = dict(meta or {})
+                        if not repair_meta.get("contract_repair_attempted"):
+                            repair_meta["contract_repair_attempted"] = True
+                            repair_user = (
+                                prompt_user.rstrip()
+                                + "\n\nReturn plan strictly following the schema; steps must be NON-EMPTY; "
+                                + "every step MUST include success_spec (EFE); every step MUST set on_fail='abort'. JSON only. "
+                                + "If you cannot produce a plan, return JSON with steps empty and include no_plan_reason."
+                            )
+                            plan = caller(name, cfg, prompt_system, repair_user, repair_meta)
+                            if not isinstance(plan, dict):
+                                raise ValueError("brain_output no es un dict")
+                        if not plan.get("steps"):
+                            raise BrainProviderError(
+                                "empty_plan",
+                                error_code="empty_plan",
+                                error_detail="empty_plan",
+                                raw_plan_excerpt=str((plan or {}).get("_raw_plan_excerpt") or "")[:500],
+                                stage="normalize",
+                            )
+                    timings = None
+                    if isinstance(plan, dict):
+                        timings = (
+                            plan.get("_timings") if isinstance(plan.get("_timings"), dict) else None
+                        )
+                        if timings is not None:
+                            try:
+                                plan.pop("_timings", None)
+                            except Exception:
+                                pass
+                    if attempt_collector is not None:
+                        attempt_collector.append(
+                            {
+                                "role": "brain",
+                                "id": name,
+                                "provider": name,
+                                "model": cfg.get("_selected_model")
+                                or cfg.get("default_model")
+                                or cfg.get("model"),
+                                "tier": cfg.get("tier"),
+                                "ok": True,
+                                "result": "ok",
+                                "stage": "parse",
+                                "raw_plan_excerpt": (
+                                    plan.get("_raw_plan_excerpt") if isinstance(plan, dict) else None
+                                ),
+                                "latency_ms": int((time.time() - started) * 1000),
+                                "ts": started,
+                                "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+                                "t_start": timings.get("t_start") if isinstance(timings, dict) else None,
+                                "t_connect_ok": timings.get("t_connect_ok")
+                                if isinstance(timings, dict)
+                                else None,
+                                "t_first_output": timings.get("t_first_output")
+                                if isinstance(timings, dict)
+                                else None,
+                                "t_last_output": timings.get("t_last_output")
+                                if isinstance(timings, dict)
+                                else None,
+                                "t_end": timings.get("t_end") if isinstance(timings, dict) else None,
+                                "timeout_kind": timings.get("timeout_kind")
+                                if isinstance(timings, dict)
+                                else "NONE",
+                                "client_abort": timings.get("client_abort")
+                                if isinstance(timings, dict)
+                                else None,
+                                "exit_code": timings.get("exit_code")
+                                if isinstance(timings, dict)
+                                else None,
+                                "stderr_tail": timings.get("stderr_tail")
+                                if isinstance(timings, dict)
+                                else None,
+                                "bytes_rx": timings.get("bytes_rx")
+                                if isinstance(timings, dict)
+                                else None,
+                                "tokens_rx": timings.get("tokens_rx")
+                                if isinstance(timings, dict)
+                                else None,
+                            }
+                        )
+                    return plan
+                except Exception as exc:
+                    msg = str(exc)
+                    error_code = getattr(exc, "error_code", None)
+                    error_detail = getattr(exc, "error_detail", None)
+                    stderr_excerpt = getattr(exc, "stderr_excerpt", None)
+                    timeout_s = getattr(exc, "timeout_s", None)
+                    parse_error = bool(getattr(exc, "parse_error", False))
+                    raw_plan_excerpt = getattr(exc, "raw_plan_excerpt", None)
+                    stage = getattr(exc, "stage", None)
+                    if not error_code:
+                        msg_lower = msg.lower()
+                        if msg_lower.startswith("brain_http_"):
+                            error_code = msg_lower.split(":", 1)[0].replace("brain_", "")
+                        elif msg_lower.startswith("cli_rc_"):
+                            error_code = "cli_rc"
+                        elif msg_lower.startswith("cli_failed"):
+                            error_code = "cli_failed"
+                        elif "auth_missing" in msg_lower:
+                            error_code = "auth_missing"
+                        elif "auth_expired" in msg_lower:
+                            error_code = "auth_expired"
+                        elif "timeout" in msg_lower:
+                            error_code = "timeout"
+                        elif "provider_lock_violation" in msg_lower:
+                            error_code = "provider_lock_violation"
+                        elif "json" in msg_lower or "parse" in msg_lower:
+                            error_code = "parse_error"
+                        elif "empty_plan" in msg_lower:
+                            error_code = "empty_plan"
+                        else:
+                            error_code = "unknown"
+                    if not error_detail:
+                        error_detail = msg
+                    timings = getattr(exc, "timings", None)
+                    if attempt_collector is not None:
+                        attempt_collector.append(
+                            {
+                                "role": "brain",
+                                "id": name,
+                                "provider": name,
+                                "model": cfg.get("_selected_model")
+                                or cfg.get("default_model")
+                                or cfg.get("model"),
+                                "tier": cfg.get("tier"),
+                                "ok": False,
+                                "result": msg,
+                                "error_code": error_code,
+                                "error_detail": error_detail,
+                                "stderr_excerpt": stderr_excerpt,
+                                "timeout_s": timeout_s,
+                                "parse_error": parse_error,
+                                "raw_plan_excerpt": raw_plan_excerpt,
+                                "stage": stage
+                                or (
+                                    "parse"
+                                    if parse_error
+                                    else ("normalize" if error_code == "empty_plan" else None)
+                                ),
+                                "latency_ms": int((time.time() - started) * 1000),
+                                "transient": self._is_transient(exc) or self._is_contract_error(exc),
+                                "ts": started,
+                                "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+                                "t_start": timings.get("t_start") if isinstance(timings, dict) else None,
+                                "t_connect_ok": timings.get("t_connect_ok")
+                                if isinstance(timings, dict)
+                                else None,
+                                "t_first_output": timings.get("t_first_output")
+                                if isinstance(timings, dict)
+                                else None,
+                                "t_last_output": timings.get("t_last_output")
+                                if isinstance(timings, dict)
+                                else None,
+                                "t_end": timings.get("t_end") if isinstance(timings, dict) else None,
+                                "timeout_kind": timings.get("timeout_kind")
+                                if isinstance(timings, dict)
+                                else None,
+                                "client_abort": timings.get("client_abort")
+                                if isinstance(timings, dict)
+                                else None,
+                                "exit_code": timings.get("exit_code")
+                                if isinstance(timings, dict)
+                                else None,
+                                "stderr_tail": timings.get("stderr_tail")
+                                if isinstance(timings, dict)
+                                else None,
+                                "bytes_rx": timings.get("bytes_rx")
+                                if isinstance(timings, dict)
+                                else None,
+                                "tokens_rx": timings.get("tokens_rx")
+                                if isinstance(timings, dict)
+                                else None,
+                            }
+                        )
+                    if self._is_transient(exc) or self._is_contract_error(exc):
+                        if self._should_try_local_fallback(exc, provider_name=name, cfg=cfg):
+                            local_fallback_requested = True
+                        # Fallo transitorio real-time
+                        if self.ledger:
+                            try:
+                                # Inferir razón (429, timeout, etc.)
+                                reason = "bridge_error"
+                                msg_l = str(exc).lower()
+                                if "429" in msg_l or "quota" in msg_l or "rate limit" in msg_l:
+                                    reason = "quota_exhausted"
+                                elif "timeout" in msg_l:
+                                    reason = "timeout"
+                                elif "auth" in msg_l:
+                                    reason = "auth"
+                                elif "provider_lock_violation" in msg_l:
+                                    reason = "provider_lock_violation"
+                                self.ledger.record_failure(name, "brain", reason, detail=str(exc))
+                            except Exception:
+                                pass
+
+                        try:
+                            self.log.warning("BrainRouter: provider %s failed (%s); switching...", name, msg)
+                        except Exception:
+                            pass
+                        errors.append(f"{name}:{msg}")
+                        continue
+                    # fallo duro: anotar y seguir con el siguiente (no reintentar el mismo)
+                    errors.append(f"{name}:hard:{msg}")
                     continue
-                # fallo duro: anotar y seguir con el siguiente (no reintentar el mismo)
-                errors.append(f"{name}:hard:{msg}")
-                continue
+            return None
+
+        cloud_providers = [
+            (name, cfg)
+            for name, cfg in providers
+            if name not in exclude and not self._is_local_provider(name, cfg)
+        ]
+        local_providers = [
+            (name, cfg)
+            for name, cfg in providers
+            if name not in exclude and self._is_local_provider(name, cfg)
+        ]
+        primary_candidates = cloud_providers if cloud_providers else local_providers
+        plan = _run_candidates(primary_candidates)
+        if isinstance(plan, dict):
+            return plan
+
+        if cloud_providers and local_fallback_requested:
+            if not local_providers:
+                raise AllBrainsFailed(errors or ["no_local_provider_available"], reason="local_fallback_unavailable")
+            plan = _run_candidates(local_providers)
+            if isinstance(plan, dict):
+                return plan
+            raise AllBrainsFailed(errors or ["local_fallback_failed"], reason="local_fallback_failed")
+
         raise AllBrainsFailed(errors or ["no_brain_providers"])
