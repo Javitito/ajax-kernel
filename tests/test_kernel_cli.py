@@ -157,3 +157,15 @@ def test_ajaxctl_verify_efe_autogen_unsupported_returns_2(tmp_path: Path):
     assert payload.get("ok") is False
     assert payload.get("unsupported_action_kind") == "unsupported_action_kind"
     assert out_path.exists()
+
+
+def test_ajaxctl_ops_friction_gc_dry_run():
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "ops", "friction", "gc", "--dry-run"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload.get("schema") == "ajax.ops.friction_gc.v0"
+    assert payload.get("mode") == "dry_run"

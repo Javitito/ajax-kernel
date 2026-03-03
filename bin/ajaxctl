@@ -6491,6 +6491,34 @@ def cmd_validate_receipt(args: argparse.Namespace) -> int:
     return 0 if all_ok else 2
 
 
+def cmd_ops_friction_gc(args: argparse.Namespace) -> int:
+    try:
+        from agency.friction import run_friction_gc
+    except Exception as exc:
+        print(f"friction_gc_unavailable:{exc}", file=sys.stderr)
+        return 3
+
+    apply = bool(getattr(args, "apply", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if apply == dry_run:
+        print("Elige exactamente uno: --dry-run o --apply", file=sys.stderr)
+        return 2
+
+    try:
+        older_than_hours = float(getattr(args, "older_than_hours", 24.0) or 24.0)
+    except Exception:
+        older_than_hours = 24.0
+
+    try:
+        payload = run_friction_gc(root_dir=ROOT, apply=apply, older_than_hours=older_than_hours)
+    except Exception as exc:
+        print(f"friction_gc_failed:{exc}", file=sys.stderr)
+        return 2
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_promote_recipe(args: argparse.Namespace) -> int:
     try:
         engine = _ensure_crystallization_engine()
@@ -8323,6 +8351,25 @@ def main(argv=None) -> int:
         help="Concierge daily brief read-only (audits + gaps + LEANN + propuestas).",
     )
     p_report_daily_brief.set_defaults(func=cmd_report_daily_brief)
+
+    p_ops = sub.add_parser("ops", help="Operaciones de mantenimiento seguro.")
+    ops_sub = p_ops.add_subparsers(dest="ops_cmd", required=True)
+    p_ops_friction = ops_sub.add_parser("friction", help="Mantenimiento sobre señales de fricción.")
+    friction_sub = p_ops_friction.add_subparsers(dest="ops_friction_cmd", required=True)
+    p_ops_friction_gc = friction_sub.add_parser(
+        "gc",
+        help="Garbage collector SAFE para waiting_for_user y provider_ledger.",
+    )
+    mode_group = p_ops_friction_gc.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--dry-run", action="store_true", help="Solo simula, no mueve ni reescribe.")
+    mode_group.add_argument("--apply", action="store_true", help="Aplica archivado + reset mínimo.")
+    p_ops_friction_gc.add_argument(
+        "--older-than-hours",
+        type=float,
+        default=24.0,
+        help="Edad mínima en horas para archivar waiting_for_user (default 24).",
+    )
+    p_ops_friction_gc.set_defaults(func=cmd_ops_friction_gc)
 
     args = parser.parse_args(argv)
     if args.command == "health":
