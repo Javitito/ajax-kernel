@@ -133,5 +133,4 @@ def test_autopilot_gate_env_safe_passes_when_session_valid(monkeypatch, tmp_path
     env_gate = gates.get("env_safe") if isinstance(gates.get("env_safe"), dict) else {}
     assert payload.get("action") == "NOOP"
     assert env_gate.get("ok") is True
-    assert env_gate.get("reason") == "lab_anchor_ok"
-
+    assert env_gate.get("reason") == "lab_anchor_ok_degraded"

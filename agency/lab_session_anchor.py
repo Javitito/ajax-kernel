@@ -75,6 +75,10 @@ def _host_fingerprint(root_dir: Path) -> str:
     return "sha1:" + hashlib.sha1(material.encode("utf-8")).hexdigest()
 
 
+def current_host_fingerprint(root_dir: Path) -> str:
+    return _host_fingerprint(Path(root_dir))
+
+
 def _session_path(root_dir: Path) -> Path:
     return Path(root_dir) / "artifacts" / "lab" / "session" / "expected_session.json"
 
@@ -257,4 +261,3 @@ def revoke_expected_session(root_dir: Path, *, now_ts: Optional[float] = None) -
     payload["receipt_path"] = _relpath(root, receipt_path)
     _safe_write_json(receipt_path, payload)
     return payload
-

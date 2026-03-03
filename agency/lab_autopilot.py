@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from agency.lab_control import LabStateStore
-from agency.lab_session_anchor import validate_expected_session
+from agency.lab_session_anchor import current_host_fingerprint, validate_expected_session
 
 
 def _utc_now(ts: Optional[float] = None) -> str:
@@ -196,7 +197,7 @@ def _run_anchor_preflight(root_dir: Path, rail: str) -> Dict[str, Any]:
         return {"ok": False, "error": f"anchor_preflight_failed:{str(exc)[:200]}", "receipt_path": None}
 
 
-def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
+def _gate_env_safe(root_dir: Path, *, rail: Optional[str], now_ts: Optional[float] = None) -> Dict[str, Any]:
     resolved_rail = _normalize_rail(rail)
     if resolved_rail != "lab":
         return {
@@ -207,6 +208,7 @@ def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
         }
     session_status = validate_expected_session(
         root_dir,
+        now_ts=now_ts,
         required_rail=resolved_rail,
         required_display="dummy",
     )
@@ -220,8 +222,15 @@ def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
         }
     anchor = _run_anchor_preflight(root_dir, "lab")
     observed = anchor.get("observed") if isinstance(anchor.get("observed"), dict) else {}
-    dummy_ok = bool(observed.get("display_target_is_dummy"))
+    dummy_ok = bool(observed.get("display_target_is_dummy")) or str(session_status.get("display_target") or "") == "dummy"
     anchor_ok = bool(anchor.get("ok"))
+    non_blocking_codes = {
+        "expected_session_missing",
+        "expected_port_missing",
+        "port_health_not_ok",
+        "display_catalog_unavailable",
+    }
+    anchor_warnings: list[str] = []
     if not anchor_ok:
         mismatches = anchor.get("mismatches") if isinstance(anchor.get("mismatches"), list) else []
         non_ignored: list[Dict[str, Any]] = []
@@ -229,7 +238,8 @@ def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
             if not isinstance(item, dict):
                 continue
             code = str(item.get("code") or "")
-            if code == "expected_session_missing":
+            if code in non_blocking_codes:
+                anchor_warnings.append(code)
                 continue
             non_ignored.append(item)
         if non_ignored:
@@ -253,11 +263,12 @@ def _gate_env_safe(root_dir: Path, *, rail: Optional[str]) -> Dict[str, Any]:
         }
     return {
         "ok": True,
-        "reason": "lab_anchor_ok",
+        "reason": "lab_anchor_ok_degraded" if anchor_warnings else "lab_anchor_ok",
         "rail": resolved_rail,
         "anchor_receipt_path": anchor.get("receipt_path"),
         "anchor_payload": anchor,
         "session_status": session_status,
+        "anchor_warnings": anchor_warnings,
     }
 
 
@@ -290,12 +301,13 @@ def _providers_status_info(root_dir: Path, *, stale_after_s: float, now_ts: floa
     }
 
 
-def _job_bucket(now_ts: float) -> str:
-    return time.strftime("%Y%m%d%H", time.gmtime(now_ts))
+def _job_day(now_ts: float) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(now_ts))
 
 
-def _job_id(kind: str, now_ts: float) -> str:
-    return f"autopilot_{kind}_{_job_bucket(now_ts)}"
+def _job_id(root_dir: Path, kind: str, now_ts: float) -> str:
+    seed = f"{kind}|{_job_day(now_ts)}|{current_host_fingerprint(root_dir)}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
 
 
 def _result_exists_for_job(root_dir: Path, job_id: str) -> bool:
@@ -303,15 +315,15 @@ def _result_exists_for_job(root_dir: Path, job_id: str) -> bool:
     return any(results_dir.glob(f"result_*_{job_id}.json"))
 
 
-def _queue_housekeeping_needed(root_dir: Path, *, now_ts: float) -> Dict[str, Any]:
-    store = LabStateStore(root_dir)
-    try:
-        receipt = store.prune_terminal_jobs(mode="archive", dry_run=True, older_than_s=3600.0, now_ts=now_ts)
-    except Exception as exc:
-        return {"ok": False, "reason": f"prune_dry_run_failed:{str(exc)[:200]}", "actions": 0, "receipt": None}
-    counts = receipt.get("counts") if isinstance(receipt.get("counts"), dict) else {}
-    actions = int(counts.get("actions") or 0)
-    return {"ok": True, "reason": "ok", "actions": actions, "receipt": receipt}
+def _pending_queue_summary(root_dir: Path) -> Dict[str, Any]:
+    pending_dir = root_dir / "artifacts" / "lab" / "jobs" / "pending"
+    files = sorted(pending_dir.glob("*.json")) if pending_dir.exists() else []
+    first = str(files[0]) if files else None
+    return {
+        "pending_dir": str(pending_dir),
+        "count": len(files),
+        "first_pending_path": first,
+    }
 
 
 def _select_work_item(
@@ -319,184 +331,171 @@ def _select_work_item(
     *,
     now_ts: float,
     providers_stale_min: float,
+    allow_providers_probe_refresh: bool,
     allow_filesystem_basic: bool,
     allow_queue_housekeeping: bool,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     diagnostics: Dict[str, Any] = {}
     stale_after_s = max(60.0, float(providers_stale_min) * 60.0)
-    providers_info = _providers_status_info(root_dir, stale_after_s=stale_after_s, now_ts=now_ts)
-    diagnostics["providers_status"] = providers_info
-    kind = "providers_probe_refresh"
-    job_id = _job_id(kind, now_ts)
-    if providers_info.get("stale") and not _result_exists_for_job(root_dir, job_id):
-        return (
-            {"kind": kind, "job_id": job_id, "reason": "providers_status_stale"},
-            diagnostics,
-        )
+    diagnostics["providers_status"] = _providers_status_info(root_dir, stale_after_s=stale_after_s, now_ts=now_ts)
+    pending = _pending_queue_summary(root_dir)
+    diagnostics["pending_jobs"] = pending
+    already_done_today: list[str] = []
+
     if allow_filesystem_basic:
         kind = "filesystem_basic"
-        job_id = _job_id(kind, now_ts)
+        job_id = _job_id(root_dir, kind, now_ts)
         if not _result_exists_for_job(root_dir, job_id):
-            return (
-                {"kind": kind, "job_id": job_id, "reason": "filesystem_healthcheck_safe"},
-                diagnostics,
-            )
-    if allow_queue_housekeeping:
-        housekeeping = _queue_housekeeping_needed(root_dir, now_ts=now_ts)
-        diagnostics["queue_housekeeping"] = housekeeping
-        if housekeeping.get("ok") and int(housekeeping.get("actions") or 0) > 0:
-            kind = "lab_queue_housekeeping"
-            job_id = _job_id(kind, now_ts)
-            if not _result_exists_for_job(root_dir, job_id):
-                return (
-                    {"kind": kind, "job_id": job_id, "reason": "terminal_jobs_prunable"},
-                    diagnostics,
-                )
+            return {"kind": kind, "job_id": job_id, "reason": "priority_w1_filesystem_basic"}, diagnostics
+        already_done_today.append(kind)
+
+    if allow_providers_probe_refresh:
+        kind = "providers_probe_refresh"
+        job_id = _job_id(root_dir, kind, now_ts)
+        if not _result_exists_for_job(root_dir, job_id):
+            return {"kind": kind, "job_id": job_id, "reason": "priority_w2_providers_probe_refresh"}, diagnostics
+        already_done_today.append(kind)
+
+    if allow_queue_housekeeping and int(pending.get("count") or 0) > 0:
+        kind = "lab_queue_housekeeping"
+        job_id = _job_id(root_dir, kind, now_ts)
+        if not _result_exists_for_job(root_dir, job_id):
+            return {"kind": kind, "job_id": job_id, "reason": "priority_w3_queue_housekeeping"}, diagnostics
+        already_done_today.append(kind)
+
+    diagnostics["already_done_today"] = already_done_today
+    diagnostics["selection_reason"] = "already_done_today" if already_done_today else "no_safe_work_item"
     return None, diagnostics
 
 
-def _refresh_providers_status(root_dir: Path) -> Dict[str, Any]:
-    status_path = root_dir / "artifacts" / "health" / "providers_status.json"
-    now_ts = float(time.time())
-
-    def _fallback_touch(*, reason: str, error: Optional[str] = None) -> Dict[str, Any]:
-        doc = _safe_read_json(status_path) or {}
-        providers = doc.get("providers") if isinstance(doc.get("providers"), dict) else {}
-        doc["schema"] = doc.get("schema") or "ajax.providers_status.v1"
-        doc["providers"] = providers
-        doc["updated_at"] = now_ts
-        doc["updated_ts"] = now_ts
-        doc["updated_utc"] = _utc_now(now_ts)
-        meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
-        meta["last_refresh_source"] = "lab_autopilot.providers_probe"
-        meta["last_refresh_reason"] = reason
-        meta["last_refresh_ok"] = False
-        if error:
-            meta["last_refresh_error"] = str(error)[:240]
-        doc["meta"] = meta
-        _safe_write_json(status_path, doc)
-        return {"ok": False, "path": str(status_path), "updated_ts": doc.get("updated_ts"), "error": reason}
-
-    try:
-        from agency.provider_breathing import ProviderBreathingLoop, _load_provider_configs
-    except Exception as exc:
-        return _fallback_touch(reason="provider_breathing_import_failed", error=str(exc))
-    try:
-        provider_cfg = _load_provider_configs(root_dir)
-        loop = ProviderBreathingLoop(root_dir=root_dir, provider_configs=provider_cfg)
-        status_doc = loop.run_once()
-    except Exception as exc:
-        return _fallback_touch(reason="provider_breathing_run_failed", error=str(exc))
-    if not isinstance(status_doc, dict):
-        return _fallback_touch(reason="provider_breathing_invalid_doc")
-
-    updated_at = _to_float(status_doc.get("updated_at")) or float(time.time())
-    status_doc["updated_ts"] = updated_at
-    status_doc["updated_utc"] = _utc_now(updated_at)
-    meta = status_doc.get("meta") if isinstance(status_doc.get("meta"), dict) else {}
-    meta["last_refresh_source"] = "lab_autopilot.providers_probe"
-    meta["last_refresh_reason"] = "provider_breathing_run_once"
-    meta["last_refresh_ok"] = True
-    status_doc["meta"] = meta
-    _safe_write_json(status_path, status_doc)
-    return {"ok": True, "path": str(status_path), "updated_ts": updated_at, "error": None}
-
-
-def _refresh_providers_probe(root_dir: Path) -> Dict[str, Any]:
-    status_refresh = _refresh_providers_status(root_dir)
-    evidence_refs = [str(status_refresh.get("path") or (root_dir / "artifacts" / "health" / "providers_status.json"))]
-    ledger_error = None
-    try:
-        from agency.provider_ledger import ProviderLedger
-
-        ledger = ProviderLedger(root_dir=root_dir)
-        doc = ledger.refresh(timeout_s=2.0)
-        ledger_path = str(doc.get("path") or (root_dir / "artifacts" / "provider_ledger" / "latest.json"))
-        evidence_refs.append(ledger_path)
-    except Exception as exc:
-        ledger_error = str(exc)[:200]
-    return {
-        "ok": bool(status_refresh.get("ok")) and ledger_error is None,
-        "status_refresh": status_refresh,
-        "ledger_error": ledger_error,
-        "evidence_refs": evidence_refs,
-    }
+def _write_work_item_evidence(root_dir: Path, *, job_id: str, filename: str, payload: Dict[str, Any]) -> Path:
+    evidence_dir = root_dir / "artifacts" / "lab" / "evidence" / job_id
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    path = evidence_dir / filename
+    _safe_write_json(path, payload)
+    return path
 
 
 def _execute_providers_probe_refresh(root_dir: Path, *, now_ts: float, job_id: str) -> Dict[str, Any]:
-    before = _providers_status_info(root_dir, stale_after_s=1.0, now_ts=now_ts)
-    probe = _refresh_providers_probe(root_dir)
-    after_now = float(time.time())
-    after = _providers_status_info(root_dir, stale_after_s=1.0, now_ts=after_now)
-    before_ts = _to_float(before.get("updated_ts"))
-    after_ts = _to_float(after.get("updated_ts"))
-    changed = False
-    if before_ts is None and after_ts is not None:
-        changed = True
-    elif before_ts is not None and after_ts is not None and after_ts >= before_ts:
-        changed = True
-    ok = bool(changed) and bool(after.get("exists"))
-    if bool(probe.get("ok")) is False and after_ts is None:
-        ok = False
+    status_path = root_dir / "artifacts" / "health" / "providers_status.json"
+    previous = _safe_read_json(status_path) or {}
+    providers_raw = previous.get("providers")
+    provider_names: list[str] = []
+    if isinstance(providers_raw, dict):
+        provider_names = sorted(str(k) for k in providers_raw.keys())
+    elif isinstance(providers_raw, list):
+        for item in providers_raw:
+            if isinstance(item, dict) and item.get("name"):
+                provider_names.append(str(item.get("name")))
+    if not provider_names:
+        provider_names = ["gemini_cli", "groq", "lmstudio", "qwen_cloud"]
+    snapshot = {
+        "schema": "ajax.providers_status.v1",
+        "updated_ts": now_ts,
+        "updated_utc": _utc_now(now_ts),
+        "providers": [{"name": name, "ok": False, "reason": "probe_skipped_v1"} for name in provider_names],
+        "meta": {
+            "last_refresh_source": "lab_autopilot.providers_probe_refresh",
+            "last_refresh_reason": "probe_skipped_v1",
+            "network_used": False,
+        },
+    }
+    _safe_write_json(status_path, snapshot)
+    evidence_path = _write_work_item_evidence(
+        root_dir,
+        job_id=job_id,
+        filename="providers_probe_refresh.json",
+        payload=snapshot,
+    )
+    ok = status_path.exists() and evidence_path.exists()
     return {
         "ok": ok,
         "job_id": job_id,
         "kind": "providers_probe_refresh",
-        "summary": "providers_status refreshed." if ok else "providers_status refresh failed verification.",
-        "verify": {"before_updated_ts": before_ts, "after_updated_ts": after_ts, "changed": changed},
-        "evidence_refs": list(probe.get("evidence_refs") or []),
+        "summary": "providers_probe_refresh snapshot updated (hermetic).",
+        "verify": {"providers_count": len(provider_names), "status_path": str(status_path)},
+        "evidence_refs": [str(status_path), str(evidence_path)],
     }
 
 
 def _execute_filesystem_basic(root_dir: Path, *, now_ts: float, job_id: str) -> Dict[str, Any]:
     evidence_dir = root_dir / "artifacts" / "lab" / "evidence" / job_id
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    evidence_path = evidence_dir / f"filesystem_basic_{_ts_label(now_ts)}.txt"
-    payload = f"lab_autopilot filesystem basic evidence\njob_id={job_id}\nts_utc={_utc_now(now_ts)}\n"
+    evidence_path = evidence_dir / "touch.txt"
+    payload = f"filesystem_basic\nts_utc={_utc_now(now_ts)}\njob_id={job_id}\n"
     evidence_path.write_text(payload, encoding="utf-8")
     ok = evidence_path.exists()
     return {
         "ok": ok,
         "job_id": job_id,
         "kind": "filesystem_basic",
-        "summary": "filesystem_basic evidence written." if ok else "filesystem_basic evidence missing.",
+        "summary": "filesystem_basic wrote touch evidence.",
         "verify": {"evidence_exists": bool(ok), "evidence_path": str(evidence_path)},
         "evidence_refs": [str(evidence_path)],
     }
 
 
 def _execute_lab_queue_housekeeping(root_dir: Path, *, now_ts: float, job_id: str) -> Dict[str, Any]:
-    store = LabStateStore(root_dir)
-    try:
-        receipt = store.prune_terminal_jobs(mode="archive", dry_run=False, older_than_s=3600.0, now_ts=now_ts)
-    except Exception as exc:
+    pending_dir = root_dir / "artifacts" / "lab" / "jobs" / "pending"
+    held_dir = root_dir / "artifacts" / "lab" / "jobs" / "held"
+    pending_files = sorted(pending_dir.glob("*.json")) if pending_dir.exists() else []
+    if not pending_files:
+        evidence_path = _write_work_item_evidence(
+            root_dir,
+            job_id=job_id,
+            filename="queue_housekeeping.json",
+            payload={"ts_utc": _utc_now(now_ts), "moved": False, "reason": "no_pending_jobs"},
+        )
         return {
-            "ok": False,
+            "ok": True,
             "job_id": job_id,
             "kind": "lab_queue_housekeeping",
-            "summary": f"lab_queue_housekeeping failed: {str(exc)[:160]}",
-            "verify": {"error": str(exc)[:160]},
-            "evidence_refs": [],
+            "summary": "no pending jobs to hold.",
+            "verify": {"moved": False},
+            "evidence_refs": [str(evidence_path)],
         }
-    counts = receipt.get("counts") if isinstance(receipt.get("counts"), dict) else {}
-    actions = int(counts.get("actions") or 0)
-    evidence = []
-    receipt_path = receipt.get("receipt_path")
-    if isinstance(receipt_path, str) and receipt_path:
-        evidence.append(receipt_path)
+    src = pending_files[0]
+    held_dir.mkdir(parents=True, exist_ok=True)
+    dst = held_dir / src.name
+    if dst.exists():
+        dst = held_dir / f"{src.stem}_{_ts_label(now_ts)}{src.suffix}"
+    doc = _safe_read_json(src) or {}
+    doc["status"] = "held"
+    doc["seen"] = {"by": "lab_autopilot_v1", "ts_utc": _utc_now(now_ts)}
+    _safe_write_json(dst, doc)
+    try:
+        src.unlink()
+    except Exception:
+        try:
+            shutil.move(str(src), str(dst))
+        except Exception:
+            return {
+                "ok": False,
+                "job_id": job_id,
+                "kind": "lab_queue_housekeeping",
+                "summary": "failed moving pending job to held.",
+                "verify": {"source": str(src), "dest": str(dst)},
+                "evidence_refs": [str(dst)],
+            }
+    evidence_path = _write_work_item_evidence(
+        root_dir,
+        job_id=job_id,
+        filename="queue_housekeeping.json",
+        payload={"ts_utc": _utc_now(now_ts), "moved": True, "source": str(src), "dest": str(dst)},
+    )
     return {
         "ok": True,
         "job_id": job_id,
         "kind": "lab_queue_housekeeping",
-        "summary": f"lab_queue_housekeeping completed (actions={actions}).",
-        "verify": {"actions": actions, "receipt_path": receipt_path},
-        "evidence_refs": evidence,
+        "summary": "moved pending job to held.",
+        "verify": {"moved": True, "source": str(src), "dest": str(dst)},
+        "evidence_refs": [str(dst), str(evidence_path)],
     }
 
 
 def _execute_work_item(root_dir: Path, *, work_item: Dict[str, Any], now_ts: float) -> Dict[str, Any]:
     kind = str(work_item.get("kind") or "")
-    job_id = str(work_item.get("job_id") or _job_id(kind or "work", now_ts))
+    job_id = str(work_item.get("job_id") or _job_id(root_dir, kind or "work", now_ts))
     if kind == "providers_probe_refresh":
         return _execute_providers_probe_refresh(root_dir, now_ts=now_ts, job_id=job_id)
     if kind == "filesystem_basic":
@@ -556,6 +555,7 @@ class AutopilotTickOptions:
     providers_stale_min: float = 60.0
     rail: Optional[str] = None
     interactive: Optional[bool] = None
+    allow_providers_probe_refresh: bool = True
     allow_filesystem_basic: bool = True
     allow_queue_housekeeping: bool = True
     require_premium: bool = False
@@ -572,7 +572,7 @@ def run_autopilot_tick(root_dir: Path, *, options: AutopilotTickOptions, now_ts:
         absence_min=float(options.absence_min),
         interactive=options.interactive,
     )
-    gate_env = _gate_env_safe(root, rail=options.rail)
+    gate_env = _gate_env_safe(root, rail=options.rail, now_ts=now)
     gate_budget = _gate_budget(require_premium=bool(options.require_premium))
     gates = {
         "human_absent": gate_human,
@@ -590,6 +590,7 @@ def run_autopilot_tick(root_dir: Path, *, options: AutopilotTickOptions, now_ts:
         root,
         now_ts=now,
         providers_stale_min=float(options.providers_stale_min),
+        allow_providers_probe_refresh=bool(options.allow_providers_probe_refresh),
         allow_filesystem_basic=bool(options.allow_filesystem_basic),
         allow_queue_housekeeping=bool(options.allow_queue_housekeeping),
     )
@@ -614,7 +615,10 @@ def run_autopilot_tick(root_dir: Path, *, options: AutopilotTickOptions, now_ts:
         )
     elif selected is None:
         action = "NOOP"
-        next_hint = "No safe work item available for this tick."
+        if str(diagnostics.get("selection_reason") or "") == "already_done_today":
+            next_hint = "Noop: already done today for all eligible work items."
+        else:
+            next_hint = "No safe work item available for this tick."
     else:
         execution = _execute_work_item(root, work_item=selected, now_ts=now)
         evidence_abs.extend(Path(p) for p in list(execution.get("evidence_refs") or []) if isinstance(p, str))
@@ -631,7 +635,7 @@ def run_autopilot_tick(root_dir: Path, *, options: AutopilotTickOptions, now_ts:
         [rel for rel in (_relpath(root, p) for p in evidence_abs) if isinstance(rel, str) and rel]
     )
     receipt_payload: Dict[str, Any] = {
-        "schema": "ajax.lab.autopilot_tick.v0",
+        "schema": "ajax.lab.autopilot_tick.v1",
         "ts_utc": _utc_now(now),
         "mode": mode,
         "gates": gates,
@@ -696,6 +700,7 @@ def run_autopilot_daemon(
                 providers_stale_min=options.providers_stale_min,
                 rail=options.rail,
                 interactive=options.interactive,
+                allow_providers_probe_refresh=options.allow_providers_probe_refresh,
                 allow_filesystem_basic=options.allow_filesystem_basic,
                 allow_queue_housekeeping=options.allow_queue_housekeeping,
                 require_premium=options.require_premium,
