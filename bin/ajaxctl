@@ -57,6 +57,11 @@ except Exception:
     revoke_expected_session = None  # type: ignore
     session_status = None  # type: ignore
 try:
+    from agency.receipt_validator import doctor_receipts, validate_receipt
+except Exception:
+    doctor_receipts = None  # type: ignore
+    validate_receipt = None  # type: ignore
+try:
     from agency.voice import Voice
 except Exception:
     Voice = None  # type: ignore
@@ -6243,6 +6248,35 @@ def cmd_doctor_topology(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor_receipts(args: argparse.Namespace) -> int:
+    if doctor_receipts is None:
+        print("Doctor receipts no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    since_min = float(getattr(args, "since_min", 180.0) or 180.0)
+    payload = doctor_receipts(ROOT, since_min=since_min)
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print("Receipts Doctor")
+    print(f"since_min: {payload.get('since_min')}")
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    print(
+        "counts: "
+        f"total={counts.get('total', 0)} "
+        f"pass={counts.get('pass', 0)} "
+        f"fail={counts.get('fail', 0)}"
+    )
+    for row in payload.get("receipts") or []:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "FAIL")
+        print(f"[{status}] {row.get('path')} :: {row.get('schema_in_receipt')} -> {row.get('schema_used')}")
+        if status != "PASS":
+            for err in row.get("errors") or []:
+                print(f"  error: {err}")
+    return 0
+
+
 def _find_latest_doctor_artifact(root: Path) -> Optional[Path]:
     directory = root / "artifacts" / "health" / "providers"
     if not directory.exists():
@@ -6382,6 +6416,34 @@ def cmd_validate_recipe(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("ok") else 2
+
+
+def cmd_validate_receipt(args: argparse.Namespace) -> int:
+    if validate_receipt is None:
+        print("Receipt validator no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    raw_paths = list(getattr(args, "paths", []) or [])
+    if not raw_paths:
+        print("Debes indicar al menos un path de receipt.", file=sys.stderr)
+        return 2
+    reports: list[dict[str, Any]] = []
+    all_ok = True
+    for raw in raw_paths:
+        path = Path(str(raw))
+        report = validate_receipt(ROOT, path)
+        reports.append(report)
+        all_ok = all_ok and bool(report.get("ok"))
+    if bool(getattr(args, "json", False)) or len(reports) > 1:
+        print(json.dumps({"ok": all_ok, "reports": reports}, ensure_ascii=False, indent=2))
+    else:
+        report = reports[0]
+        status = "PASS" if bool(report.get("ok")) else "FAIL"
+        print(f"[{status}] {report.get('path')}")
+        print(f"schema: {report.get('schema_in_receipt')} -> {report.get('schema_used')}")
+        if not bool(report.get("ok")):
+            for err in report.get("errors") or []:
+                print(f"error: {err}")
+    return 0 if all_ok else 2
 
 
 def cmd_promote_recipe(args: argparse.Namespace) -> int:
@@ -7996,6 +8058,18 @@ def main(argv=None) -> int:
     )
     p_doctor_topology.add_argument("--json", action="store_true", help="Imprime payload JSON completo.")
     p_doctor_topology.set_defaults(func=cmd_doctor_topology)
+    p_doctor_receipts = doctor_sub.add_parser(
+        "receipts", help="Valida receipts recientes contra schemas soportados."
+    )
+    p_doctor_receipts.add_argument(
+        "--since-min",
+        type=float,
+        default=180.0,
+        help="Ventana en minutos para receipts recientes (default 180).",
+    )
+    p_doctor_receipts.add_argument("--json", action="store_true", help="Salida JSON.")
+    p_doctor_receipts.set_defaults(func=cmd_doctor_receipts)
+
     p_incident = sub.add_parser("incident", help="Gestión manual de incidentes.")
     incident_sub = p_incident.add_subparsers(dest="incident_cmd", required=True)
     p_incident_open = incident_sub.add_parser(
@@ -8056,6 +8130,12 @@ def main(argv=None) -> int:
         "--rail", choices=["lab", "prod"], default=None, help="Filtra episodios por rail."
     )
     p_validate_recipe.set_defaults(func=cmd_validate_recipe)
+    p_validate_receipt = val_sub.add_parser(
+        "receipt", help="Valida uno o más receipts JSON contra schema conocido."
+    )
+    p_validate_receipt.add_argument("paths", nargs="+", help="Ruta(s) de receipt(s) JSON.")
+    p_validate_receipt.add_argument("--json", action="store_true", help="Salida JSON.")
+    p_validate_receipt.set_defaults(func=cmd_validate_receipt)
 
     p_promote = sub.add_parser("promote", help="Promociona recipes a hábitos canon.")
     promo_sub = p_promote.add_subparsers(dest="promote_cmd", required=True)

@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "required": [
+    "schema",
+    "ts_utc",
+    "ok"
+  ],
+  "properties": {
+    "schema": {
+      "enum": [
+        "ajax.lab.session.init.v0",
+        "ajax.lab.session.status.v0",
+        "ajax.lab.session.revoke.v0",
+        "ajax.lab.session_status.v0"
+      ]
+    },
+    "ts_utc": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "session_path": {
+      "type": "string"
+    },
+    "receipt_path": {
+      "type": "string"
+    },
+    "status": {
+      "type": "object"
+    },
+    "status_after": {
+      "type": "object"
+    },
+    "invalid_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
