@@ -169,3 +169,14 @@ def test_ajaxctl_ops_friction_gc_dry_run():
     payload = json.loads(proc.stdout)
     assert payload.get("schema") == "ajax.ops.friction_gc.v0"
     assert payload.get("mode") == "dry_run"
+
+
+def test_ajaxctl_doctor_metabolism_runs():
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "doctor", "metabolism", "--since-min", "60"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode in {0, 1}
+    payload = json.loads(proc.stdout)
+    assert payload.get("schema") == "ajax.doctor.metabolism.v0"
