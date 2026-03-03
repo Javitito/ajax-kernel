@@ -8739,6 +8739,86 @@ class AjaxCore:
                 return True
         return False
 
+    def _human_present_now(self) -> bool:
+        try:
+            return bool(self._read_human_active_flag())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_user_solvable_planning_issue(
+        *,
+        planning_error: Optional[str],
+        provider_failures: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
+        text = str(planning_error or "").strip().lower()
+        if any(
+            token in text
+            for token in {
+                "brain_failed_no_plan",
+                "planning_error:empty_plan",
+                "codex_budget_exceeded",
+                "quota_exhausted",
+                "auth",
+                "provider",
+                "timeout",
+            }
+        ):
+            return True
+        rows = provider_failures if isinstance(provider_failures, list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("error_code") or row.get("status") or "").strip().lower()
+            detail = str(row.get("error_detail") or row.get("detail") or "").strip().lower()
+            blob = f"{code} {detail}"
+            if any(
+                token in blob
+                for token in {
+                    "quota",
+                    "auth",
+                    "credential",
+                    "token",
+                    "apikey",
+                    "timeout",
+                    "429",
+                    "401",
+                    "403",
+                    "provider_unavailable",
+                }
+            ):
+                return True
+        return False
+
+    def _resolve_no_plan_terminal(
+        self,
+        *,
+        default: str = "WAITING_FOR_USER",
+        planning_error: Optional[str],
+        provider_failures: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        terminal = str(default or "WAITING_FOR_USER")
+        try:
+            if failure_on_no_plan_terminal is not None:
+                terminal = str(
+                    failure_on_no_plan_terminal(
+                        self._provider_failure_policy(),
+                        default=default or "WAITING_FOR_USER",
+                    )
+                )
+        except Exception:
+            terminal = str(default or "WAITING_FOR_USER")
+        if (
+            terminal == "GAP_LOGGED"
+            and self._human_present_now()
+            and self._is_user_solvable_planning_issue(
+                planning_error=planning_error,
+                provider_failures=provider_failures,
+            )
+        ):
+            return "WAITING_FOR_USER"
+        return terminal
+
     def _record_exec_receipt(
         self,
         *,
@@ -14831,16 +14911,12 @@ class AjaxCore:
                 "errors": meta.get("errors") if isinstance(meta.get("errors"), list) else None,
             }
             mission.pending_plan = None
-            terminal = "WAITING_FOR_USER"
-            try:
-                if failure_on_no_plan_terminal is not None:
-                    terminal = str(
-                        failure_on_no_plan_terminal(
-                            self._provider_failure_policy(), default="WAITING_FOR_USER"
-                        )
-                    )
-            except Exception:
-                terminal = "WAITING_FOR_USER"
+            terminal = self._resolve_no_plan_terminal(
+                default="WAITING_FOR_USER",
+                planning_error="brain_failed_no_plan",
+                provider_failures=provider_failures,
+            )
+            next_return: Optional[str] = None
             if terminal == "GAP_LOGGED":
                 gap_path = None
                 try:
@@ -14868,6 +14944,15 @@ class AjaxCore:
                     },
                     artifacts={"capability_gap": gap_path} if gap_path else None,
                 )
+            else:
+                self._finalize_ask_user_wait(
+                    mission,
+                    question,
+                    source="plan",
+                    blocking_reason="brain_failed_no_plan",
+                    extra_context=extra_context,
+                )
+                next_return = _AWAIT_USER_SENTINEL
             try:
                 self._record_exec_receipt(
                     mission=mission,
@@ -14878,15 +14963,7 @@ class AjaxCore:
                 )
             except Exception:
                 pass
-            return None
-            self._finalize_ask_user_wait(
-                mission,
-                question,
-                source="plan",
-                blocking_reason="brain_failed_no_plan",
-                extra_context=extra_context,
-            )
-            return _AWAIT_USER_SENTINEL
+            return next_return
 
         # Council-first: asegurar que todo plan (incluyendo fastpaths/hábitos) tiene verdict antes de ejecutar.
         try:
@@ -15109,16 +15186,16 @@ class AjaxCore:
                 raw_path = meta.get("brains_failures_path")
                 if isinstance(raw_path, str) and raw_path.strip():
                     brains_failures_path = raw_path
-            terminal = "WAITING_FOR_USER"
-            try:
-                if failure_on_no_plan_terminal is not None:
-                    terminal = str(
-                        failure_on_no_plan_terminal(
-                            self._provider_failure_policy(), default="WAITING_FOR_USER"
-                        )
-                    )
-            except Exception:
-                terminal = "WAITING_FOR_USER"
+            provider_failures = (
+                meta.get("provider_failures")
+                if isinstance(meta.get("provider_failures"), list)
+                else []
+            )
+            terminal = self._resolve_no_plan_terminal(
+                default="WAITING_FOR_USER",
+                planning_error=str(planning_error or "planning_error:empty_plan"),
+                provider_failures=provider_failures,
+            )
             if terminal == "GAP_LOGGED":
                 gap_path = None
                 try:

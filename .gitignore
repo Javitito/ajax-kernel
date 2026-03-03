@@ -27,3 +27,7 @@ __pycache__/
 .secrets/
 .env
 .env.*
+
+# Local caches / third-party mirrors
+.leann/
+tools/third_party/
