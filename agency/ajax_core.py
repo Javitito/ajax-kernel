@@ -116,6 +116,10 @@ try:
 except ImportError:  # pragma: no cover
     repair_plan_if_needed = None  # type: ignore
 try:
+    from agency.verify.efe_autogen import autogen_efe_candidate
+except ImportError:  # pragma: no cover
+    autogen_efe_candidate = None  # type: ignore
+try:
     from agency.rigor_selector import decide_rigor, RigorStrategy
 except ImportError:  # pragma: no cover
     decide_rigor = None  # type: ignore
@@ -4589,6 +4593,7 @@ class AjaxCore:
         intention: str,
         source: str,
         receipt_path: Optional[str],
+        efe_candidate_path: Optional[str] = None,
         reason: Optional[str],
         errors: Optional[List[str]] = None,
     ) -> AjaxPlan:
@@ -4601,6 +4606,8 @@ class AjaxCore:
         }
         if receipt_path:
             meta["efe_repair_receipt"] = receipt_path
+        if efe_candidate_path:
+            meta["efe_candidate_path"] = efe_candidate_path
         if reason:
             meta["efe_repair_reason"] = reason
         if errors:
@@ -5613,14 +5620,21 @@ class AjaxCore:
                         except Exception:
                             pass
                     stage_sequence.append("validate")
+                    plan_candidate = plan_json if isinstance(plan_json, dict) else None
                     plan_json, repair_meta = self._validate_brain_plan_with_efe_repair(
                         plan_json, intention=intention, source=f"brain_invalid_retry:{source_label}"
                     )
                     if plan_json is None:
+                        candidate_path = self._autogen_missing_efe_candidate(
+                            mission_id=mission.mission_id,
+                            source=f"brain_invalid_retry:{source_label}",
+                            source_doc=plan_candidate,
+                        )
                         return self._build_missing_efe_plan(
                             intention=intention,
                             source=f"brain_invalid_retry:{source_label}",
                             receipt_path=(repair_meta or {}).get("receipt"),
+                            efe_candidate_path=candidate_path,
                             reason=(repair_meta or {}).get("reason"),
                             errors=errors[-6:] if isinstance(errors, list) else None,
                         )
@@ -5837,14 +5851,21 @@ class AjaxCore:
                                 last_attempt["stage_sequence"] = seq2
                 except Exception:
                     pass
+                plan_candidate = brain_output if isinstance(brain_output, dict) else None
                 plan_json, repair_meta = self._validate_brain_plan_with_efe_repair(
                     brain_output, intention=intention, source="brain"
                 )
                 if plan_json is None:
+                    candidate_path = self._autogen_missing_efe_candidate(
+                        mission_id=mission.mission_id,
+                        source="brain",
+                        source_doc=plan_candidate,
+                    )
                     return self._build_missing_efe_plan(
                         intention=intention,
                         source="brain",
                         receipt_path=(repair_meta or {}).get("receipt"),
+                        efe_candidate_path=candidate_path,
                         reason=(repair_meta or {}).get("reason"),
                         errors=errors[-6:] if isinstance(errors, list) else None,
                     )
@@ -9866,14 +9887,21 @@ class AjaxCore:
                         caller=self._call_brain_provider,
                         attempt_collector=escalation_attempts,
                     )
+                plan_candidate = plan_json if isinstance(plan_json, dict) else None
                 plan_json, repair_meta = self._validate_brain_plan_with_efe_repair(
                     plan_json, intention=mission.intention, source="brain_escalation"
                 )
                 if plan_json is None:
+                    candidate_path = self._autogen_missing_efe_candidate(
+                        mission_id=mission.mission_id,
+                        source="brain_escalation",
+                        source_doc=plan_candidate,
+                    )
                     return self._build_missing_efe_plan(
                         intention=mission.intention,
                         source="brain_escalation",
                         receipt_path=(repair_meta or {}).get("receipt"),
+                        efe_candidate_path=candidate_path,
                         reason=(repair_meta or {}).get("reason"),
                     )
                 if repair_meta and isinstance(plan_json, dict):
@@ -12652,6 +12680,7 @@ class AjaxCore:
         mission: MissionState,
         *,
         receipt_path: Optional[str] = None,
+        efe_candidate_path: Optional[str] = None,
         reason: Optional[str] = None,
     ) -> Optional[str]:
         """
@@ -12685,6 +12714,9 @@ class AjaxCore:
             }
             if receipt_path:
                 payload["evidence_refs"].append(receipt_path)
+            if efe_candidate_path:
+                payload["efe_candidate_path"] = efe_candidate_path
+                payload["evidence_refs"].append(efe_candidate_path)
 
             fpath = gap_dir / f"{gap_id}.json"
             fpath.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -12695,6 +12727,44 @@ class AjaxCore:
             except Exception:
                 pass
             return None
+
+    def _autogen_missing_efe_candidate(
+        self,
+        *,
+        mission_id: str,
+        source: str,
+        source_doc: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        if autogen_efe_candidate is None:
+            return None
+        if not isinstance(source_doc, dict):
+            return None
+        try:
+            base = getattr(self, "root_dir", None) or getattr(self, "config", None).root_dir  # type: ignore[union-attr]
+        except Exception:
+            base = None
+        try:
+            root = Path(base) if base else Path(__file__).resolve().parents[1]
+            ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time()))
+            safe_source = re.sub(r"[^a-z0-9_\\-]+", "_", str(source or "missing_efe").lower()).strip("_")
+            if not safe_source:
+                safe_source = "missing_efe"
+            out_path = root / "artifacts" / "efe_candidates" / f"{ts}_{mission_id}_{safe_source}.json"
+            result = autogen_efe_candidate(
+                source_doc=source_doc,
+                out_path=out_path,
+                source_path=None,
+                receipts_dir=root / "artifacts" / "receipts",
+            )
+            candidate_path = result.get("efe_candidate_path") if isinstance(result, dict) else None
+            if isinstance(candidate_path, str) and candidate_path:
+                return candidate_path
+        except Exception as exc:
+            try:
+                self.log.warning("No se pudo autogenerar EFE candidato: %s", exc)
+            except Exception:
+                pass
+        return None
 
     def _emit_missing_efe_derived_gap(
         self,
@@ -14864,6 +14934,7 @@ class AjaxCore:
                 gap_path = self._emit_missing_efe_gap(
                     mission,
                     receipt_path=meta.get("efe_repair_receipt"),
+                    efe_candidate_path=meta.get("efe_candidate_path"),
                     reason=meta.get("efe_repair_reason"),
                 )
             except Exception:
@@ -14876,6 +14947,7 @@ class AjaxCore:
                 detail={
                     "planning_error": "missing_efe_final",
                     "receipt": meta.get("efe_repair_receipt"),
+                    "efe_candidate_path": meta.get("efe_candidate_path"),
                     "reason": meta.get("efe_repair_reason"),
                     "gap_path": gap_path,
                 },

@@ -639,6 +639,51 @@ def cmd_media_verify(args: argparse.Namespace) -> int:
     return 0 if res.ok else 2
 
 
+def cmd_verify_efe_autogen(args: argparse.Namespace) -> int:
+    try:
+        from agency.verify.efe_autogen import autogen_efe_candidate_from_file
+    except Exception as exc:
+        print(f"efe_autogen_unavailable:{exc}", file=sys.stderr)
+        return 3
+
+    source_path = Path(str(getattr(args, "from_path", "") or "").strip()).expanduser()
+    out_path = Path(str(getattr(args, "out_path", "") or "").strip()).expanduser()
+    if not source_path.is_absolute():
+        source_path = (Path.cwd() / source_path).resolve()
+    if not out_path.is_absolute():
+        out_path = (Path.cwd() / out_path).resolve()
+
+    if not source_path.exists():
+        print(f"--from not found: {source_path}", file=sys.stderr)
+        return 2
+
+    try:
+        result = autogen_efe_candidate_from_file(
+            source_path=source_path,
+            out_path=out_path,
+            receipts_dir=ROOT / "artifacts" / "receipts",
+        )
+    except Exception as exc:
+        print(f"efe_autogen_failed:{exc}", file=sys.stderr)
+        return 2
+
+    print(
+        json.dumps(
+            {
+                "ok": bool(result.get("ok")),
+                "efe_candidate_path": result.get("efe_candidate_path"),
+                "receipt_path": result.get("receipt_path"),
+                "unsupported_action_kind": result.get("unsupported_action_kind"),
+                "hint": result.get("hint"),
+                "explain": result.get("explain"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if bool(result.get("ok")) else 2
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     """
     Planning-only harness (no actuation).
@@ -7447,6 +7492,27 @@ def main(argv=None) -> int:
     p_health = sub.add_parser("health", help="Chequea el estado del sistema AJAX.")
     p_health.add_argument("--json", action="store_true", help="Salida JSON sin resumen extra.")
     p_health.set_defaults(func=cmd_health)
+
+    p_verify = sub.add_parser("verify", help="Utilidades de verificación y EFE.")
+    verify_sub = p_verify.add_subparsers(dest="verify_cmd", required=True)
+    p_verify_efe = verify_sub.add_parser("efe", help="Utilidades de Expected Final State (EFE).")
+    verify_efe_sub = p_verify_efe.add_subparsers(dest="verify_efe_cmd", required=True)
+    p_verify_efe_autogen = verify_efe_sub.add_parser(
+        "autogen", help="Autogenera EFE determinista desde receipt/plan JSON."
+    )
+    p_verify_efe_autogen.add_argument(
+        "--from",
+        dest="from_path",
+        required=True,
+        help="Ruta a receipt_or_plan.json de entrada.",
+    )
+    p_verify_efe_autogen.add_argument(
+        "--out",
+        dest="out_path",
+        required=True,
+        help="Ruta de salida para el EFE candidato.",
+    )
+    p_verify_efe_autogen.set_defaults(func=cmd_verify_efe_autogen)
 
     p_cloud_canary = sub.add_parser(
         "cloud-canary", help="Canary determinista para proveedor cloud."
