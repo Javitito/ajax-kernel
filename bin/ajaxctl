@@ -684,6 +684,34 @@ def cmd_verify_efe_autogen(args: argparse.Namespace) -> int:
     return 0 if bool(result.get("ok")) else 2
 
 
+def cmd_verify_efe_apply_candidate(args: argparse.Namespace) -> int:
+    try:
+        from agency.verify.efe_apply_candidate import apply_efe_candidate_from_gap
+    except Exception as exc:
+        print(f"efe_apply_candidate_unavailable:{exc}", file=sys.stderr)
+        return 3
+
+    gap_path = Path(str(getattr(args, "gap_path", "") or "").strip()).expanduser()
+    out_path = Path(str(getattr(args, "out_path", "") or "").strip()).expanduser()
+    if not gap_path.is_absolute():
+        gap_path = (Path.cwd() / gap_path).resolve()
+    if not out_path.is_absolute():
+        out_path = (Path.cwd() / out_path).resolve()
+
+    if not gap_path.exists():
+        print(f"--gap not found: {gap_path}", file=sys.stderr)
+        return 2
+
+    try:
+        result = apply_efe_candidate_from_gap(gap_path=gap_path, out_path=out_path)
+    except Exception as exc:
+        print(f"efe_apply_candidate_failed:{exc}", file=sys.stderr)
+        return 2
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     """
     Planning-only harness (no actuation).
@@ -7541,6 +7569,23 @@ def main(argv=None) -> int:
         help="Ruta de salida para el EFE candidato.",
     )
     p_verify_efe_autogen.set_defaults(func=cmd_verify_efe_autogen)
+    p_verify_efe_apply_candidate = verify_efe_sub.add_parser(
+        "apply-candidate",
+        help="Materializa EFE final editable desde un GAP con efe_candidate_path (sin ejecutar).",
+    )
+    p_verify_efe_apply_candidate.add_argument(
+        "--gap",
+        dest="gap_path",
+        required=True,
+        help="Ruta al gap JSON que contiene efe_candidate_path.",
+    )
+    p_verify_efe_apply_candidate.add_argument(
+        "--out",
+        dest="out_path",
+        required=True,
+        help="Ruta de salida para el EFE final editable.",
+    )
+    p_verify_efe_apply_candidate.set_defaults(func=cmd_verify_efe_apply_candidate)
 
     p_cloud_canary = sub.add_parser(
         "cloud-canary", help="Canary determinista para proveedor cloud."
