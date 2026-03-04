@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "required": [
+    "schema",
+    "ts_utc",
+    "ok",
+    "session_path",
+    "from_schema",
+    "to_schema"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ajax.lab.session.migrated.v1"
+    },
+    "ts_utc": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "session_path": {
+      "type": "string"
+    },
+    "from_schema": {
+      "type": "string"
+    },
+    "to_schema": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "migration_error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "receipt_path": {
+      "type": "string"
+    }
+  }
+}

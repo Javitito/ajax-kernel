@@ -109,6 +109,48 @@ def test_doctor_receipts_reports_schema_mismatch(tmp_path: Path) -> None:
     )
 
 
+def test_doctor_receipts_unknown_lab_session_schema_warns_unsupported(tmp_path: Path) -> None:
+    _prepare_schema_tree(tmp_path)
+    receipt = tmp_path / "artifacts" / "receipts" / "unknown_lab_session_schema.json"
+    _write_json(
+        receipt,
+        {
+            "schema": "ajax.lab.session.future.v9",
+            "ts_utc": "2026-03-02T00:00:00Z",
+            "ok": True,
+        },
+    )
+
+    payload = doctor_receipts(tmp_path, since_min=9999)
+    row = payload["receipts"][0]
+    assert row["status"] == "WARN"
+    assert row["reason_codes"] == ["unsupported_receipt_schema"]
+
+
+def test_validate_receipt_lab_session_migrated_v1_passes(tmp_path: Path) -> None:
+    _prepare_schema_tree(tmp_path)
+    receipt = tmp_path / "artifacts" / "receipts" / "lab_session_migrated_test.json"
+    _write_json(
+        receipt,
+        {
+            "schema": "ajax.lab.session.migrated.v1",
+            "ts_utc": "2026-03-03T19:59:57Z",
+            "ok": True,
+            "session_path": "artifacts/lab/session/expected_session.json",
+            "from_schema": "ajax.lab.expected_session.v0",
+            "to_schema": "ajax.lab.expected_session.v1",
+            "session_id": "ea244c25-b2bf-454f-8dc7-3f0e592cf6b8",
+            "migration_error": None,
+            "warnings": [],
+            "receipt_path": "artifacts/receipts/lab_session_migrated_test.json",
+        },
+    )
+
+    report = validate_receipt(tmp_path, receipt)
+    assert report.get("ok") is True
+    assert report.get("schema_used") == "ajax.lab.session.migrated.v1.schema.json"
+
+
 def test_doctor_receipts_default_warns_for_unsupported_schema(tmp_path: Path) -> None:
     _prepare_schema_tree(tmp_path)
     _write_json(
