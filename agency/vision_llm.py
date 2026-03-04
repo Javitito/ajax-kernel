@@ -18,7 +18,7 @@ from agency.path_utils import windows_to_wsl_path
 from agency.windows_driver_client import WindowsDriverClient
 from agency.skills.os_inspection import inspect_ui_tree
 from agency.method_pack import AJAX_METHOD_PACK
-from agency.vision_gate import ensure_local_vision_allowed
+from agency.vision_tag_screen import tag_screen_with_delta
 
 
 @dataclass
@@ -120,26 +120,7 @@ def capture_and_tag_screen(rows: int = 4, cols: int = 4) -> Dict[str, Any]:
     """
     Usa el client/skill para obtener SoM: image_path y marks (idealmente con bbox, text, ocr_confidence).
     """
-    ensure_local_vision_allowed("tag_screen_grid")
-    client = WindowsDriverClient()
-    res = client.tag_screen_grid(rows=rows, cols=cols)
-
-    # Si recibimos un meta_path/json_path, leerlo y normalizar rutas internas
-    meta_path = res.get("meta_path") or res.get("json_path")
-    if meta_path:
-        meta_path = windows_to_wsl_path(str(meta_path))
-        meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
-        img_path = meta.get("image_path")
-        if img_path:
-            meta["image_path"] = windows_to_wsl_path(str(img_path))
-        res = meta
-
-    # Normaliza siempre image_path para WSL
-    img_path = res.get("image_path")
-    if img_path:
-        res["image_path"] = windows_to_wsl_path(str(img_path))
-
-    return _enrich_with_ocr(res)
+    return tag_screen_with_delta(rows=rows, cols=cols)
 
 
 def perform_click_from_mark(mark: Dict[str, Any]) -> None:
