@@ -32,7 +32,7 @@ STRICT_JSON_ONLY = (
 )
 
 
-_SUBCALL_ROLES = {"scout", "reviewer", "summarizer", "validator"}
+_SUBCALL_ROLES = {"scout", "reviewer", "summarizer", "validator", "survivor"}
 _TASK_TIERS = {"T0", "T1", "T2"}
 
 
@@ -392,7 +392,7 @@ def _subcall_role_to_provider_role(role: str) -> str:
         return "council"
     if role_n == "validator":
         return "council"
-    return "brain"  # summarizer default
+    return "brain"  # summarizer/survivor default
 
 
 def _compile_subcall_prompts(*, role: str, tier: str, prompt: str, json_mode: bool) -> Tuple[str, str]:
@@ -418,6 +418,11 @@ def _compile_subcall_prompts(*, role: str, tier: str, prompt: str, json_mode: bo
         system = (
             "You are AJAX Summarizer.\n"
             "Summarize the given content concisely and accurately.\n"
+        )
+    elif role_n == "survivor":
+        system = (
+            "You are AJAX Survivor.\n"
+            "Produce a robust local-first answer that can run under constrained providers.\n"
         )
     else:
         system = (
