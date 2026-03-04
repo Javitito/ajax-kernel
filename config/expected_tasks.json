@@ -1,0 +1,67 @@
+{
+  "schema": "ajax.expected_tasks.v1",
+  "default_user": "Javi",
+  "default_delay": "PT45S",
+  "tasks": [
+    {
+      "task_name": "\\AJAX\\AJAX_Start_AJAX",
+      "description": "Arranca/valida driver PROD 5010 al iniciar sesion de Javi.",
+      "rail": "prod",
+      "trigger": {
+        "user": "Javi",
+        "delay": "PT20S"
+      },
+      "action": {
+        "script": "scripts/ops/ajax_driver_watchdog.ps1",
+        "args": "-Rail prod -Port 5010 -MaxTicks 1"
+      },
+      "settings": {
+        "restart_count": 3,
+        "restart_interval": "PT1M",
+        "start_when_available": true,
+        "run_with_highest": true,
+        "hidden": true
+      }
+    },
+    {
+      "task_name": "\\AJAX\\AJAX_Lab_Bootstrap",
+      "description": "Bootstrap LAB (driver 5012 + worker) al iniciar sesion de Javi.",
+      "rail": "lab",
+      "trigger": {
+        "user": "Javi",
+        "delay": "PT25S"
+      },
+      "action": {
+        "script": "scripts/ops/ajax_lab_bootstrap.ps1",
+        "args": "-Rail lab -EnsureWorker"
+      },
+      "settings": {
+        "restart_count": 3,
+        "restart_interval": "PT1M",
+        "start_when_available": true,
+        "run_with_highest": true,
+        "hidden": true
+      }
+    },
+    {
+      "task_name": "\\AJAX\\AJAX_DriverWatchdog",
+      "description": "Vigila 5012 durante la sesion de Javi y repone caidas fail-closed.",
+      "rail": "lab",
+      "trigger": {
+        "user": "Javi",
+        "delay": "PT40S"
+      },
+      "action": {
+        "script": "scripts/ops/ajax_driver_watchdog.ps1",
+        "args": "-Rail lab -Port 5012 -EnsureWorker -MaxTicks 0 -TickIntervalSec 30 -StopFile C:\\Users\\Public\\ajax\\watchdog.stop"
+      },
+      "settings": {
+        "restart_count": 3,
+        "restart_interval": "PT1M",
+        "start_when_available": true,
+        "run_with_highest": true,
+        "hidden": true
+      }
+    }
+  ]
+}
