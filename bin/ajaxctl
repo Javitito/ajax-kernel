@@ -639,6 +639,79 @@ def cmd_media_verify(args: argparse.Namespace) -> int:
     return 0 if res.ok else 2
 
 
+def cmd_verify_efe_autogen(args: argparse.Namespace) -> int:
+    try:
+        from agency.verify.efe_autogen import autogen_efe_candidate_from_file
+    except Exception as exc:
+        print(f"efe_autogen_unavailable:{exc}", file=sys.stderr)
+        return 3
+
+    source_path = Path(str(getattr(args, "from_path", "") or "").strip()).expanduser()
+    out_path = Path(str(getattr(args, "out_path", "") or "").strip()).expanduser()
+    if not source_path.is_absolute():
+        source_path = (Path.cwd() / source_path).resolve()
+    if not out_path.is_absolute():
+        out_path = (Path.cwd() / out_path).resolve()
+
+    if not source_path.exists():
+        print(f"--from not found: {source_path}", file=sys.stderr)
+        return 2
+
+    try:
+        result = autogen_efe_candidate_from_file(
+            source_path=source_path,
+            out_path=out_path,
+            receipts_dir=ROOT / "artifacts" / "receipts",
+        )
+    except Exception as exc:
+        print(f"efe_autogen_failed:{exc}", file=sys.stderr)
+        return 2
+
+    print(
+        json.dumps(
+            {
+                "ok": bool(result.get("ok")),
+                "efe_candidate_path": result.get("efe_candidate_path"),
+                "receipt_path": result.get("receipt_path"),
+                "unsupported_action_kind": result.get("unsupported_action_kind"),
+                "hint": result.get("hint"),
+                "explain": result.get("explain"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if bool(result.get("ok")) else 2
+
+
+def cmd_verify_efe_apply_candidate(args: argparse.Namespace) -> int:
+    try:
+        from agency.verify.efe_apply_candidate import apply_efe_candidate_from_gap
+    except Exception as exc:
+        print(f"efe_apply_candidate_unavailable:{exc}", file=sys.stderr)
+        return 3
+
+    gap_path = Path(str(getattr(args, "gap_path", "") or "").strip()).expanduser()
+    out_path = Path(str(getattr(args, "out_path", "") or "").strip()).expanduser()
+    if not gap_path.is_absolute():
+        gap_path = (Path.cwd() / gap_path).resolve()
+    if not out_path.is_absolute():
+        out_path = (Path.cwd() / out_path).resolve()
+
+    if not gap_path.exists():
+        print(f"--gap not found: {gap_path}", file=sys.stderr)
+        return 2
+
+    try:
+        result = apply_efe_candidate_from_gap(gap_path=gap_path, out_path=out_path)
+    except Exception as exc:
+        print(f"efe_apply_candidate_failed:{exc}", file=sys.stderr)
+        return 2
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     """
     Planning-only harness (no actuation).
@@ -6277,6 +6350,28 @@ def cmd_doctor_receipts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor_metabolism(args: argparse.Namespace) -> int:
+    try:
+        from agency.metabolism_doctor import run_doctor_metabolism
+    except Exception as exc:
+        print(f"doctor_metabolism_unavailable:{exc}", file=sys.stderr)
+        return 3
+    try:
+        since_min = float(getattr(args, "since_min", 180.0) or 180.0)
+    except Exception:
+        since_min = 180.0
+    try:
+        payload = run_doctor_metabolism(root_dir=ROOT, since_min=since_min)
+    except Exception as exc:
+        print(f"doctor_metabolism_failed:{exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    try:
+        return int(payload.get("exit_code", 0))
+    except Exception:
+        return 0
+
+
 def _find_latest_doctor_artifact(root: Path) -> Optional[Path]:
     directory = root / "artifacts" / "health" / "providers"
     if not directory.exists():
@@ -6444,6 +6539,34 @@ def cmd_validate_receipt(args: argparse.Namespace) -> int:
             for err in report.get("errors") or []:
                 print(f"error: {err}")
     return 0 if all_ok else 2
+
+
+def cmd_ops_friction_gc(args: argparse.Namespace) -> int:
+    try:
+        from agency.friction import run_friction_gc
+    except Exception as exc:
+        print(f"friction_gc_unavailable:{exc}", file=sys.stderr)
+        return 3
+
+    apply = bool(getattr(args, "apply", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if apply == dry_run:
+        print("Elige exactamente uno: --dry-run o --apply", file=sys.stderr)
+        return 2
+
+    try:
+        older_than_hours = float(getattr(args, "older_than_hours", 24.0) or 24.0)
+    except Exception:
+        older_than_hours = 24.0
+
+    try:
+        payload = run_friction_gc(root_dir=ROOT, apply=apply, older_than_hours=older_than_hours)
+    except Exception as exc:
+        print(f"friction_gc_failed:{exc}", file=sys.stderr)
+        return 2
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_promote_recipe(args: argparse.Namespace) -> int:
@@ -7448,6 +7571,44 @@ def main(argv=None) -> int:
     p_health.add_argument("--json", action="store_true", help="Salida JSON sin resumen extra.")
     p_health.set_defaults(func=cmd_health)
 
+    p_verify = sub.add_parser("verify", help="Utilidades de verificación y EFE.")
+    verify_sub = p_verify.add_subparsers(dest="verify_cmd", required=True)
+    p_verify_efe = verify_sub.add_parser("efe", help="Utilidades de Expected Final State (EFE).")
+    verify_efe_sub = p_verify_efe.add_subparsers(dest="verify_efe_cmd", required=True)
+    p_verify_efe_autogen = verify_efe_sub.add_parser(
+        "autogen", help="Autogenera EFE determinista desde receipt/plan JSON."
+    )
+    p_verify_efe_autogen.add_argument(
+        "--from",
+        dest="from_path",
+        required=True,
+        help="Ruta a receipt_or_plan.json de entrada.",
+    )
+    p_verify_efe_autogen.add_argument(
+        "--out",
+        dest="out_path",
+        required=True,
+        help="Ruta de salida para el EFE candidato.",
+    )
+    p_verify_efe_autogen.set_defaults(func=cmd_verify_efe_autogen)
+    p_verify_efe_apply_candidate = verify_efe_sub.add_parser(
+        "apply-candidate",
+        help="Materializa EFE final editable desde un GAP con efe_candidate_path (sin ejecutar).",
+    )
+    p_verify_efe_apply_candidate.add_argument(
+        "--gap",
+        dest="gap_path",
+        required=True,
+        help="Ruta al gap JSON que contiene efe_candidate_path.",
+    )
+    p_verify_efe_apply_candidate.add_argument(
+        "--out",
+        dest="out_path",
+        required=True,
+        help="Ruta de salida para el EFE final editable.",
+    )
+    p_verify_efe_apply_candidate.set_defaults(func=cmd_verify_efe_apply_candidate)
+
     p_cloud_canary = sub.add_parser(
         "cloud-canary", help="Canary determinista para proveedor cloud."
     )
@@ -8069,6 +8230,17 @@ def main(argv=None) -> int:
     )
     p_doctor_receipts.add_argument("--json", action="store_true", help="Salida JSON.")
     p_doctor_receipts.set_defaults(func=cmd_doctor_receipts)
+    p_doctor_metabolism = doctor_sub.add_parser(
+        "metabolism",
+        help="Resumen rápido de loop GAP/EFE/router/friction (read-only).",
+    )
+    p_doctor_metabolism.add_argument(
+        "--since-min",
+        type=float,
+        default=180.0,
+        help="Ventana en minutos para agregados recientes (default 180).",
+    )
+    p_doctor_metabolism.set_defaults(func=cmd_doctor_metabolism)
 
     p_incident = sub.add_parser("incident", help="Gestión manual de incidentes.")
     incident_sub = p_incident.add_subparsers(dest="incident_cmd", required=True)
@@ -8257,6 +8429,25 @@ def main(argv=None) -> int:
         help="Concierge daily brief read-only (audits + gaps + LEANN + propuestas).",
     )
     p_report_daily_brief.set_defaults(func=cmd_report_daily_brief)
+
+    p_ops = sub.add_parser("ops", help="Operaciones de mantenimiento seguro.")
+    ops_sub = p_ops.add_subparsers(dest="ops_cmd", required=True)
+    p_ops_friction = ops_sub.add_parser("friction", help="Mantenimiento sobre señales de fricción.")
+    friction_sub = p_ops_friction.add_subparsers(dest="ops_friction_cmd", required=True)
+    p_ops_friction_gc = friction_sub.add_parser(
+        "gc",
+        help="Garbage collector SAFE para waiting_for_user y provider_ledger.",
+    )
+    mode_group = p_ops_friction_gc.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--dry-run", action="store_true", help="Solo simula, no mueve ni reescribe.")
+    mode_group.add_argument("--apply", action="store_true", help="Aplica archivado + reset mínimo.")
+    p_ops_friction_gc.add_argument(
+        "--older-than-hours",
+        type=float,
+        default=24.0,
+        help="Edad mínima en horas para archivar waiting_for_user (default 24).",
+    )
+    p_ops_friction_gc.set_defaults(func=cmd_ops_friction_gc)
 
     args = parser.parse_args(argv)
     if args.command == "health":

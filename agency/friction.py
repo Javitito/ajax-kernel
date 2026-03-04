@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import time
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Any
@@ -127,3 +128,195 @@ def collect_friction_signals(root_dir: Path) -> FrictionSignals:
         pass
         
     return signals
+
+
+def _iso_utc(ts: float | None = None) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts or time.time()))
+
+
+def _utc_stamp(ts: float | None = None) -> str:
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(ts or time.time()))
+
+
+def _is_local_provider_name(name: str) -> bool:
+    n = str(name or "").strip().lower()
+    return "lmstudio" in n or "ollama" in n or n.startswith("local_")
+
+
+def _safe_read_json(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _safe_write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _next_available_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    idx = 1
+    while True:
+        candidate = path.with_name(f"{path.stem}_{idx}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        idx += 1
+
+
+def _archive_waiting_for_user(
+    *,
+    waiting_dir: Path,
+    apply: bool,
+    older_than_seconds: float,
+    now_ts: float,
+) -> Dict[str, Any]:
+    archived: List[str] = []
+    candidates: List[str] = []
+    skipped_recent = 0
+    archive_dir = waiting_dir / "_archived" / time.strftime("%Y-%m-%d", time.gmtime(now_ts))
+
+    if not waiting_dir.exists():
+        return {
+            "waiting_dir": str(waiting_dir),
+            "archive_dir": str(archive_dir),
+            "candidates": [],
+            "archived": [],
+            "skipped_recent": 0,
+        }
+
+    for path in sorted(waiting_dir.glob("*.json")):
+        try:
+            age = max(0.0, now_ts - float(path.stat().st_mtime))
+        except Exception:
+            age = 0.0
+        if age < float(older_than_seconds):
+            skipped_recent += 1
+            continue
+        candidates.append(str(path))
+        if apply:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            target = _next_available_path(archive_dir / path.name)
+            shutil.move(str(path), str(target))
+            archived.append(str(target))
+
+    return {
+        "waiting_dir": str(waiting_dir),
+        "archive_dir": str(archive_dir),
+        "candidates": candidates,
+        "archived": archived,
+        "skipped_recent": skipped_recent,
+    }
+
+
+def _reset_provider_ledger_minimum_budget(
+    *,
+    ledger_path: Path,
+    apply: bool,
+    now_ts: float,
+) -> Dict[str, Any]:
+    snapshots_dir = ledger_path.parent / "_snapshots"
+    snapshot_path = snapshots_dir / f"latest_{_utc_stamp(now_ts)}.json"
+    ledger_exists = ledger_path.exists()
+    payload: Dict[str, Any] = {
+        "ledger_path": str(ledger_path),
+        "ledger_exists": ledger_exists,
+        "snapshot_path": str(snapshot_path),
+        "local_rows_kept_ok": 0,
+        "cloud_rows_soft_failed": 0,
+        "applied": False,
+    }
+
+    if not ledger_exists:
+        return payload
+
+    doc = _safe_read_json(ledger_path)
+    rows = doc.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+        doc["rows"] = rows
+
+    if apply:
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ledger_path, snapshot_path)
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            provider = str(row.get("provider") or "").strip()
+            if _is_local_provider_name(provider):
+                payload["local_rows_kept_ok"] += 1
+                continue
+            payload["cloud_rows_soft_failed"] += 1
+            row["status"] = "soft_fail"
+            row["reason"] = "minimum_budget_mode"
+            row["cooldown_until_ts"] = now_ts + 3600.0
+            row["cooldown_until"] = _iso_utc(now_ts + 3600.0)
+            details = row.get("details")
+            if not isinstance(details, dict):
+                details = {}
+                row["details"] = details
+            details["source"] = "friction_gc"
+            details["detail"] = "minimum_budget_mode"
+
+        doc["updated_ts"] = now_ts
+        doc["updated_utc"] = _iso_utc(now_ts)
+        doc["mode"] = "minimum_budget"
+        doc["gc_policy"] = "friction_gc_safe.v0"
+        _safe_write_json(ledger_path, doc)
+        payload["applied"] = True
+
+    return payload
+
+
+def run_friction_gc(
+    *,
+    root_dir: Path,
+    apply: bool,
+    older_than_hours: float = 24.0,
+) -> Dict[str, Any]:
+    """
+    SAFE Friction GC:
+    - Archiva waiting_for_user antiguos (sin borrar irreversible)
+    - Snapshot + reset de provider_ledger a minimum_budget_mode (si existe)
+    - Escribe receipt artifacts/receipts/friction_gc_<ts>.json
+    """
+    now_ts = time.time()
+    root = Path(root_dir)
+    older_than_seconds = max(0.0, float(older_than_hours) * 3600.0)
+
+    waiting_dir = root / "artifacts" / "waiting_for_user"
+    ledger_path = root / "artifacts" / "provider_ledger" / "latest.json"
+    receipts_dir = root / "artifacts" / "receipts"
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+
+    waiting_summary = _archive_waiting_for_user(
+        waiting_dir=waiting_dir,
+        apply=apply,
+        older_than_seconds=older_than_seconds,
+        now_ts=now_ts,
+    )
+    ledger_summary = _reset_provider_ledger_minimum_budget(
+        ledger_path=ledger_path,
+        apply=apply,
+        now_ts=now_ts,
+    )
+
+    summary = {
+        "schema": "ajax.ops.friction_gc.v0",
+        "created_at": _iso_utc(now_ts),
+        "mode": "apply" if apply else "dry_run",
+        "older_than_hours": float(older_than_hours),
+        "waiting_for_user": waiting_summary,
+        "provider_ledger": ledger_summary,
+    }
+
+    receipt_path = receipts_dir / f"friction_gc_{_utc_stamp(now_ts)}.json"
+    _safe_write_json(receipt_path, summary)
+    summary["receipt_path"] = str(receipt_path)
+    return summary

@@ -96,3 +96,87 @@ def test_ajaxctl_lab_init_accepts_parent_root_with_ajax_kernel_child(tmp_path: P
     payload = json.loads(proc.stdout)
     assert payload.get("ok") is True
     assert payload.get("root") == str(fake_root.resolve())
+
+
+def test_ajaxctl_verify_efe_autogen_generates_candidate(tmp_path: Path):
+    source = tmp_path / "plan.json"
+    source.write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {"id": "s1", "action": "write_file", "args": {"path": "output.txt"}},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "efe_candidate.json"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "bin/ajaxctl",
+            "verify",
+            "efe",
+            "autogen",
+            "--from",
+            str(source),
+            "--out",
+            str(out_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload.get("ok") is True
+    assert Path(str(payload.get("efe_candidate_path"))).exists()
+    assert Path(str(payload.get("receipt_path"))).exists()
+
+
+def test_ajaxctl_verify_efe_autogen_unsupported_returns_2(tmp_path: Path):
+    source = tmp_path / "plan.json"
+    source.write_text(json.dumps({"steps": [{"action": "unknown_action", "args": {}}]}), encoding="utf-8")
+    out_path = tmp_path / "efe_candidate.json"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "bin/ajaxctl",
+            "verify",
+            "efe",
+            "autogen",
+            "--from",
+            str(source),
+            "--out",
+            str(out_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2
+    payload = json.loads(proc.stdout)
+    assert payload.get("ok") is False
+    assert payload.get("unsupported_action_kind") == "unsupported_action_kind"
+    assert out_path.exists()
+
+
+def test_ajaxctl_ops_friction_gc_dry_run():
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "ops", "friction", "gc", "--dry-run"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload.get("schema") == "ajax.ops.friction_gc.v0"
+    assert payload.get("mode") == "dry_run"
+
+
+def test_ajaxctl_doctor_metabolism_runs():
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "doctor", "metabolism", "--since-min", "60"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode in {0, 1}
+    payload = json.loads(proc.stdout)
+    assert payload.get("schema") == "ajax.doctor.metabolism.v0"
