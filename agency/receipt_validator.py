@@ -5,6 +5,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+PASS = "PASS"
+WARN = "WARN"
+FAIL = "FAIL"
+
+_WARN_REASON_CODES = {"unsupported_receipt_schema", "missing_schema_field"}
+
 
 def _utc_now(ts: Optional[float] = None) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts or time.time()))
@@ -18,6 +24,20 @@ def _safe_read_json(path: Path) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return raw if isinstance(raw, dict) else None
+
+
+def _read_receipt_json(path: Path) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None, "io_error"
+    try:
+        raw = json.loads(text)
+    except Exception:
+        return None, "json_parse_error"
+    if not isinstance(raw, dict):
+        return None, "json_parse_error"
+    return raw, None
 
 
 def _schema_path_for_receipt(root_dir: Path, receipt_schema: str) -> Optional[Path]:
@@ -107,23 +127,46 @@ def _validate_node(value: Any, schema: Dict[str, Any], path: str) -> List[str]:
 def validate_receipt(root_dir: Path, receipt_path: Path) -> Dict[str, Any]:
     root = Path(root_dir)
     path = Path(receipt_path)
-    payload = _safe_read_json(path)
-    if payload is None:
+    if not path.exists():
         return {
             "ok": False,
             "path": str(path),
-            "errors": ["receipt_not_json_object"],
+            "errors": ["io_error"],
+            "reason_codes": ["io_error"],
             "schema_in_receipt": None,
             "schema_path": None,
             "schema_used": None,
         }
-    schema_in_receipt = str(payload.get("schema") or "")
+    payload, load_error = _read_receipt_json(path)
+    if payload is None:
+        return {
+            "ok": False,
+            "path": str(path),
+            "errors": [str(load_error or "json_parse_error")],
+            "reason_codes": [str(load_error or "json_parse_error")],
+            "schema_in_receipt": None,
+            "schema_path": None,
+            "schema_used": None,
+        }
+    raw_schema = payload.get("schema")
+    if raw_schema is None or not str(raw_schema).strip():
+        return {
+            "ok": False,
+            "path": str(path),
+            "errors": ["missing_schema_field"],
+            "reason_codes": ["missing_schema_field"],
+            "schema_in_receipt": None,
+            "schema_path": None,
+            "schema_used": None,
+        }
+    schema_in_receipt = str(raw_schema).strip()
     schema_path = _schema_path_for_receipt(root, schema_in_receipt)
     if schema_path is None:
         return {
             "ok": False,
             "path": str(path),
             "errors": [f"unsupported_receipt_schema:{schema_in_receipt or 'missing'}"],
+            "reason_codes": ["unsupported_receipt_schema"],
             "schema_in_receipt": schema_in_receipt or None,
             "schema_path": None,
             "schema_used": None,
@@ -134,6 +177,7 @@ def validate_receipt(root_dir: Path, receipt_path: Path) -> Dict[str, Any]:
             "ok": False,
             "path": str(path),
             "errors": [f"schema_file_invalid:{schema_path}"],
+            "reason_codes": ["io_error"],
             "schema_in_receipt": schema_in_receipt or None,
             "schema_path": str(schema_path),
             "schema_used": schema_path.name,
@@ -143,18 +187,67 @@ def validate_receipt(root_dir: Path, receipt_path: Path) -> Dict[str, Any]:
         "ok": len(errors) == 0,
         "path": str(path),
         "errors": errors,
+        "reason_codes": [] if len(errors) == 0 else ["invalid_against_schema"],
         "schema_in_receipt": schema_in_receipt or None,
         "schema_path": str(schema_path),
         "schema_used": schema_path.name,
     }
 
 
-def doctor_receipts(root_dir: Path, *, since_min: float) -> Dict[str, Any]:
+def _normalize_reason_codes(report: Dict[str, Any]) -> List[str]:
+    raw_codes = report.get("reason_codes")
+    if isinstance(raw_codes, list):
+        out = []
+        for code in raw_codes:
+            if isinstance(code, str) and code.strip():
+                out.append(code.strip())
+        if out:
+            return out
+    # Backward-compatible inference from legacy error strings.
+    out: List[str] = []
+    for err in report.get("errors") or []:
+        if not isinstance(err, str):
+            continue
+        token = err.strip()
+        if not token:
+            continue
+        if token.startswith("unsupported_receipt_schema"):
+            out.append("unsupported_receipt_schema")
+        elif token.startswith("missing_schema_field"):
+            out.append("missing_schema_field")
+        elif token.startswith("json_parse_error"):
+            out.append("json_parse_error")
+        elif token.startswith("io_error") or token.startswith("schema_file_invalid"):
+            out.append("io_error")
+        elif token.startswith("receipt_not_json_object"):
+            out.append("json_parse_error")
+        else:
+            out.append("invalid_against_schema")
+    return sorted(set(out))
+
+
+def _severity_from_reason_codes(*, ok: bool, reason_codes: List[str], strict: bool) -> str:
+    if ok:
+        return PASS
+    codes = [c for c in reason_codes if isinstance(c, str) and c.strip()]
+    if codes and all(code in _WARN_REASON_CODES for code in codes):
+        return FAIL if strict else WARN
+    return FAIL
+
+
+def doctor_receipts(
+    root_dir: Path,
+    *,
+    since_min: float,
+    strict: bool = False,
+    top_k: int = 0,
+    summary_only: bool = False,
+) -> Dict[str, Any]:
     root = Path(root_dir)
     receipts_dir = root / "artifacts" / "receipts"
     now = time.time()
     cutoff = now - max(0.0, float(since_min)) * 60.0
-    rows: list[Dict[str, Any]] = []
+    rows_all: list[Dict[str, Any]] = []
     if receipts_dir.exists():
         files = sorted(receipts_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         for path in files:
@@ -165,15 +258,46 @@ def doctor_receipts(root_dir: Path, *, since_min: float) -> Dict[str, Any]:
             if mtime < cutoff:
                 continue
             result = validate_receipt(root, path)
-            result["status"] = "PASS" if bool(result.get("ok")) else "FAIL"
-            rows.append(result)
-    pass_count = sum(1 for row in rows if bool(row.get("ok")))
-    fail_count = len(rows) - pass_count
+            reason_codes = _normalize_reason_codes(result)
+            status = _severity_from_reason_codes(
+                ok=bool(result.get("ok")),
+                reason_codes=reason_codes,
+                strict=bool(strict),
+            )
+            result["reason_codes"] = reason_codes
+            result["status"] = status
+            rows_all.append(result)
+    pass_count = sum(1 for row in rows_all if str(row.get("status") or "") == PASS)
+    warn_count = sum(1 for row in rows_all if str(row.get("status") or "") == WARN)
+    fail_count = sum(1 for row in rows_all if str(row.get("status") or "") == FAIL)
+
+    reason_counts: Dict[str, int] = {}
+    for row in rows_all:
+        for code in row.get("reason_codes") or []:
+            key = str(code or "").strip()
+            if not key:
+                continue
+            reason_counts[key] = int(reason_counts.get(key, 0)) + 1
+
+    effective_top_k = max(0, int(top_k or 0))
+    rows_view = list(rows_all)
+    if summary_only:
+        rows_view = []
+    elif effective_top_k > 0:
+        rows_view = rows_view[:effective_top_k]
+    omitted = max(0, len(rows_all) - len(rows_view))
+
     return {
         "schema": "ajax.doctor.receipts.v0",
         "ts_utc": _utc_now(now),
         "since_min": float(since_min),
+        "strict": bool(strict),
+        "summary_only": bool(summary_only),
+        "top_k": effective_top_k,
         "ok": fail_count == 0,
-        "counts": {"total": len(rows), "pass": pass_count, "fail": fail_count},
-        "receipts": rows,
+        "counts": {"total": len(rows_all), "pass": pass_count, "warn": warn_count, "fail": fail_count},
+        "reason_counts": reason_counts,
+        "legacy_warn_detected": bool(warn_count > 0),
+        "omitted": omitted,
+        "receipts": rows_view,
     }
