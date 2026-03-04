@@ -776,7 +776,12 @@ def cmd_subcall(args: argparse.Namespace) -> int:
         print(f"subcall_unavailable:{exc}", file=sys.stderr)
         return 3
 
+    local_prompt = getattr(args, "local", None)
+    if local_prompt is not None:
+        local_prompt = str(local_prompt).strip()
     prompt = " ".join(getattr(args, "prompt", []) or []).strip()
+    if not prompt and local_prompt:
+        prompt = local_prompt
     use_stdin = bool(getattr(args, "stdin", False))
     try:
         if use_stdin or (not prompt and not sys.stdin.isatty()):
@@ -784,13 +789,34 @@ def cmd_subcall(args: argparse.Namespace) -> int:
     except Exception:
         pass
 
+    role = str(getattr(args, "role", "") or "").strip().lower()
+    tier = str(getattr(args, "tier", "") or "").strip().upper()
+    if local_prompt:
+        # Local survival path: defaults become explicit unless caller overrides.
+        if not role:
+            role = "survivor"
+        if not tier:
+            tier = "T1"
+        if not os.getenv("AJAX_COST_MODE"):
+            os.environ["AJAX_COST_MODE"] = "save_codex"
+
+    if not role:
+        print(
+            "missing_role: use --role {scout,reviewer,summarizer,validator,survivor} or --local '<prompt>'",
+            file=sys.stderr,
+        )
+        return 2
+    if not tier:
+        print("missing_tier: use --tier {T0,T1,T2} or --local '<prompt>'", file=sys.stderr)
+        return 2
+
     try:
         if not os.getenv("AJAX_COST_MODE"):
             os.environ["AJAX_COST_MODE"] = _default_cost_mode(ROOT)
         result = run_subcall(
             root_dir=ROOT,
-            role=str(args.role),
-            tier=str(args.tier),
+            role=role,
+            tier=tier,
             prompt=str(prompt or ""),
             json_mode=bool(getattr(args, "json", False)),
             allow_premium_subcall=bool(getattr(args, "allow_premium_subcall", False)),
@@ -7543,9 +7569,14 @@ def main(argv=None) -> int:
         "subcall", help="DEV_DELEGATION: subcall (policy+ledger) para roles T0–T2."
     )
     p_subcall.add_argument(
-        "--role", required=True, choices=["scout", "reviewer", "summarizer", "validator"]
+        "--role", choices=["scout", "reviewer", "summarizer", "validator", "survivor"]
     )
-    p_subcall.add_argument("--tier", required=True, choices=["T0", "T1", "T2"])
+    p_subcall.add_argument("--tier", choices=["T0", "T1", "T2"])
+    p_subcall.add_argument(
+        "--local",
+        metavar="PROMPT",
+        help="Atajo local survival: default role=survivor, tier=T1, y usa PROMPT como entrada.",
+    )
     p_subcall.add_argument(
         "--json", action="store_true", help="Exige salida JSON + 1 repair pass si hace falta."
     )
