@@ -167,7 +167,7 @@ def test_ajaxctl_ops_friction_gc_dry_run():
     )
     assert proc.returncode == 0
     payload = json.loads(proc.stdout)
-    assert payload.get("schema") == "ajax.ops.friction_gc.v0"
+    assert payload.get("schema") == "ajax.ops.friction_gc.v1"
     assert payload.get("mode") == "dry_run"
 
 
