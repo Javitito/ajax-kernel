@@ -58,7 +58,7 @@ function Probe-Port {
     [int]$PortNumber,
     [string]$RailName
   )
-  $host = "127.0.0.1"
+  $targetHost = "127.0.0.1"
   $result = [ordered]@{
     port = $PortNumber
     listener = $false
@@ -83,7 +83,7 @@ function Probe-Port {
     return $result
   }
   try {
-    $health = Invoke-RestMethod -Method Get -Uri ("http://{0}:{1}/health" -f $host, $PortNumber) -TimeoutSec 2 -ErrorAction Stop
+    $health = Invoke-RestMethod -Method Get -Uri ("http://{0}:{1}/health" -f $targetHost, $PortNumber) -TimeoutSec 2 -ErrorAction Stop
     $result.health_ok = [bool]$health.ok
     if (-not $result.health_ok) {
       $result.health_error = "health_not_ok"
@@ -97,7 +97,7 @@ function Probe-Port {
   }
   if ($RailName -eq "lab") {
     try {
-      $displays = Invoke-RestMethod -Method Get -Uri ("http://{0}:{1}/displays" -f $host, $PortNumber) -TimeoutSec 2 -ErrorAction Stop
+      $displays = Invoke-RestMethod -Method Get -Uri ("http://{0}:{1}/displays" -f $targetHost, $PortNumber) -TimeoutSec 2 -ErrorAction Stop
       $count = 0
       if ($displays -and $displays.displays) {
         $count = @($displays.displays).Count
