@@ -5,10 +5,15 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import inspect
 
 from agency.delta_vision import compute_tile_hash, tile_changed
 from agency.path_utils import windows_to_wsl_path
-from agency.vision_gate import ensure_local_vision_allowed
+from agency.vision_gate import (
+    ensure_local_vision_allowed,
+    is_local_vision_allowed,
+    select_local_vision_provider,
+)
 from agency.windows_driver_client import WindowsDriverClient
 
 try:
@@ -175,8 +180,9 @@ def tag_screen_with_delta(
     cache_path: Optional[Path] = None,
     driver_client: Optional[Any] = None,
     ocr_fn: Optional[Callable[[Path, List[int]], Tuple[str, float]]] = None,
+    allow_local: bool = False,
 ) -> Dict[str, Any]:
-    ensure_local_vision_allowed("tag_screen_grid")
+    ensure_local_vision_allowed("tag_screen_grid", allow_local=allow_local)
     if rows <= 0 or cols <= 0:
         raise ValueError("tag_screen_grid_invalid_dimensions")
     thr = _default_threshold() if threshold is None else max(0, int(threshold))
@@ -198,6 +204,9 @@ def tag_screen_with_delta(
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_file = _cache_path(root_dir, cache_path)
     prev_hashes, cached_tags = _load_cache(cache_file)
+    provider_meta = select_local_vision_provider(root_dir=root_dir)
+    if provider_used is None and is_local_vision_allowed(allow_local=allow_local) and bool(provider_meta.get("up")):
+        provider_used = str(provider_meta.get("provider") or "")
 
     changed_count = 0
     skipped_count = 0
@@ -258,6 +267,7 @@ def tag_screen_with_delta(
     }
     if provider_used:
         delta_payload["provider_used"] = str(provider_used)
+    delta_payload["provider_local_status"] = provider_meta
 
     delta_path = out_dir / f"delta_run_{_ts_label()}.json"
     _write_json(delta_path, delta_payload)
@@ -267,3 +277,76 @@ def tag_screen_with_delta(
     payload["delta_run_path"] = str(delta_path)
     payload["delta_run"] = delta_payload
     return payload
+
+
+def _latest_delta_metrics(root_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    out_dir = _artifact_dir(root_dir)
+    if not out_dir.exists():
+        return None
+    candidates = sorted(out_dir.glob("delta_run_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        return None
+    latest = candidates[0]
+    doc = _read_json(latest)
+    if not isinstance(doc, dict):
+        return {"path": str(latest), "error": "delta_run_invalid_json"}
+    return {"path": str(latest), **doc}
+
+
+def _delta_bypass_detected() -> tuple[bool, str]:
+    try:
+        source = inspect.getsource(tag_screen_with_delta)
+    except Exception:
+        return True, "source_unavailable"
+    if "compute_tile_hash" not in source or "tile_changed" not in source:
+        return True, "delta_vision_not_used"
+    return False, ""
+
+
+def run_doctor_vision(root_dir: Optional[Path] = None) -> Dict[str, Any]:
+    allowed = is_local_vision_allowed()
+    provider_meta = select_local_vision_provider(root_dir=root_dir)
+    bypass_detected, bypass_reason = _delta_bypass_detected()
+    latest_delta = _latest_delta_metrics(root_dir=root_dir)
+    next_hint: List[str] = []
+    if not allowed:
+        next_hint.append("set VISION_LOCAL_ALLOWED=true")
+        next_hint.append("python bin/ajaxctl vision tag-screen --allow-local")
+    if not provider_meta.get("up"):
+        next_hint.append("python bin/ajaxctl doctor providers --roles vision")
+    if bypass_detected:
+        next_hint.append("pytest tests/test_vision_delta_wireup.py -v --tb=short")
+    payload = {
+        "schema": "ajax.doctor.vision.v1",
+        "ts_utc": _utc_now(),
+        "vision_local_allowed": bool(allowed),
+        "provider_local": provider_meta,
+        "bypass_detected": bool(bypass_detected),
+        "bypass_reason": bypass_reason or "none",
+        "latest_delta": latest_delta,
+        "next_hint": next_hint,
+    }
+    payload["summary"] = format_doctor_vision_summary(payload)
+    return payload
+
+
+def format_doctor_vision_summary(payload: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    lines.append("AJAX Doctor vision")
+    lines.append(f"VISION_LOCAL_ALLOWED: {payload.get('vision_local_allowed')}")
+    provider = payload.get("provider_local") if isinstance(payload.get("provider_local"), dict) else {}
+    lines.append(
+        f"provider_local: {provider.get('provider') or 'none'} status={provider.get('status')} reason={provider.get('reason') or ''}"
+    )
+    lines.append(f"bypass_detected: {bool(payload.get('bypass_detected'))}")
+    latest = payload.get("latest_delta") if isinstance(payload.get("latest_delta"), dict) else {}
+    if latest:
+        lines.append(
+            f"latest_delta: changed={latest.get('tiles_changed')} skipped={latest.get('tiles_skipped')} threshold={latest.get('threshold')}"
+        )
+    hints = payload.get("next_hint") if isinstance(payload.get("next_hint"), list) else []
+    if hints:
+        lines.append("next_hint:")
+        for hint in hints:
+            lines.append(f"- {hint}")
+    return "\n".join(lines)
