@@ -42,8 +42,15 @@ def _read_receipt_json(path: Path) -> tuple[Optional[Dict[str, Any]], Optional[s
 
 def _schema_path_for_receipt(root_dir: Path, receipt_schema: str) -> Optional[Path]:
     schemas_dir = Path(root_dir) / "schemas" / "receipts"
-    if receipt_schema.startswith("ajax.lab.session.") or receipt_schema == "ajax.lab.session_status.v0":
+    if receipt_schema in {
+        "ajax.lab.session.init.v0",
+        "ajax.lab.session.status.v0",
+        "ajax.lab.session.revoke.v0",
+        "ajax.lab.session_status.v0",
+    }:
         return schemas_dir / "ajax.lab.session.v0.schema.json"
+    if receipt_schema == "ajax.lab.session.migrated.v1":
+        return schemas_dir / "ajax.lab.session.migrated.v1.schema.json"
     if receipt_schema in {"ajax.lab.autopilot_tick.v1", "ajax.lab.autopilot_tick.v0"}:
         return schemas_dir / "ajax.lab.autopilot_tick.v1.schema.json"
     if receipt_schema in {"ajax.topology_doctor.v0", "ajax.topology_doctor.v1"}:
