@@ -24,6 +24,7 @@ import unicodedata
 import requests  # type: ignore
 from agency.leann_query_client import query_leann  # type: ignore
 from agency.lab_control import LabStateStore, DEFAULT_PROBE_TTL_SECONDS
+from agency.system_executor import SystemExecutor
 
 # Órganos existentes (manejo suave para deps opcionales)
 try:
@@ -668,6 +669,7 @@ class AjaxCore:
         self.log = logging.getLogger("ajax.core")
         self.config = config or AjaxConfig.from_env()
         self.root_dir = self.config.root_dir
+        self.system_executor = SystemExecutor()
         self.state_dir = self.config.state_dir
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.auto_crystallize_enabled = self._load_auto_crystallize_flag()
@@ -933,7 +935,7 @@ class AjaxCore:
             f"Start-Process -WindowStyle Hidden '{py_cmd}' -ArgumentList 'drivers\\os_driver.py --host {host} --port {port}' -WorkingDirectory '{repo_win}'",
         ]
         try:
-            subprocess.run(cmd, check=False, timeout=10)
+            self.system_executor.run(cmd, check=False, timeout=10)
             for _ in range(5):
                 time.sleep(1.5)
                 if self._driver_health():
@@ -1536,7 +1538,7 @@ class AjaxCore:
             uniq.append(p)
         for proc_name in uniq:
             try:
-                proc = subprocess.run(
+                proc = self.system_executor.run(
                     ["tasklist.exe", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {proc_name}"],
                     capture_output=True,
                     text=True,
@@ -1577,7 +1579,7 @@ class AjaxCore:
         if not name:
             return pids
         try:
-            proc = subprocess.run(
+            proc = self.system_executor.run(
                 ["tasklist.exe", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {name}"],
                 capture_output=True,
                 text=True,
@@ -1692,7 +1694,7 @@ class AjaxCore:
             if pid in pre:
                 continue
             try:
-                tk = subprocess.run(
+                tk = self.system_executor.run(
                     ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     text=True,
@@ -6964,7 +6966,7 @@ class AjaxCore:
             ]
             started = time.monotonic()
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
+                proc = self.system_executor.run(cmd, capture_output=True, text=True, timeout=40)
             except Exception as exc:
                 return {"ok": False, "error": str(exc)[:200]}
             elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -10098,7 +10100,7 @@ class AjaxCore:
         timeout_kind = "NONE"
         client_abort = False
         try:
-            proc = subprocess.Popen(
+            proc = self.system_executor.popen(
                 cmd,
                 stdin=subprocess.PIPE if input_text is not None else None,
                 stdout=subprocess.PIPE,
@@ -11848,7 +11850,7 @@ class AjaxCore:
                         except Exception:
                             cwd_path = cwd
                     try:
-                        proc = subprocess.run(
+                        proc = self.system_executor.run(
                             cmd,
                             input=prompt if needs_stdin else None,
                             capture_output=True,
