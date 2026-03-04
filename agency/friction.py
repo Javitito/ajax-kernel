@@ -180,21 +180,30 @@ def _archive_waiting_for_user(
     candidates: List[str] = []
     skipped_recent = 0
     archive_dir = waiting_dir / "_archived" / time.strftime("%Y-%m-%d", time.gmtime(now_ts))
+    oldest_age_s = 0.0
+    total_count = 0
+    threshold_hours = max(0.0, float(older_than_seconds) / 3600.0)
 
     if not waiting_dir.exists():
         return {
             "waiting_dir": str(waiting_dir),
-            "archive_dir": str(archive_dir),
+            "target_archive_path": str(archive_dir),
+            "count": 0,
+            "total_count": 0,
+            "oldest_age_hours": None,
+            "threshold_hours": threshold_hours,
             "candidates": [],
             "archived": [],
             "skipped_recent": 0,
         }
 
     for path in sorted(waiting_dir.glob("*.json")):
+        total_count += 1
         try:
             age = max(0.0, now_ts - float(path.stat().st_mtime))
         except Exception:
             age = 0.0
+        oldest_age_s = max(oldest_age_s, age)
         if age < float(older_than_seconds):
             skipped_recent += 1
             continue
@@ -207,7 +216,11 @@ def _archive_waiting_for_user(
 
     return {
         "waiting_dir": str(waiting_dir),
-        "archive_dir": str(archive_dir),
+        "target_archive_path": str(archive_dir),
+        "count": len(candidates),
+        "total_count": total_count,
+        "oldest_age_hours": round(oldest_age_s / 3600.0, 2) if total_count > 0 else None,
+        "threshold_hours": threshold_hours,
         "candidates": candidates,
         "archived": archived,
         "skipped_recent": skipped_recent,
@@ -308,7 +321,7 @@ def run_friction_gc(
     )
 
     summary = {
-        "schema": "ajax.ops.friction_gc.v0",
+        "schema": "ajax.ops.friction_gc.v1",
         "created_at": _iso_utc(now_ts),
         "mode": "apply" if apply else "dry_run",
         "older_than_hours": float(older_than_hours),
@@ -316,7 +329,7 @@ def run_friction_gc(
         "provider_ledger": ledger_summary,
     }
 
-    receipt_path = receipts_dir / f"friction_gc_{_utc_stamp(now_ts)}.json"
+    receipt_path = receipts_dir / f"friction_gc_v1_{_utc_stamp(now_ts)}.json"
     _safe_write_json(receipt_path, summary)
     summary["receipt_path"] = str(receipt_path)
     return summary
