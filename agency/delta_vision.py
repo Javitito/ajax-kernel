@@ -15,47 +15,49 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
-import hashlib
 
 try:
     from PIL import Image
 except ImportError:  # pragma: no cover
     Image = None  # type: ignore
 
-try:  # pragma: no cover - imagehash es opcional
-    import imagehash
-except Exception:  # pragma: no cover
-    imagehash = None  # type: ignore
+if Image is not None:  # pragma: no branch
+    _RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
+else:  # pragma: no cover
+    _RESAMPLE = None
 
 
 def _now() -> float:
     return time.time()
 
 
-def _phash(img: "Image.Image") -> str:
-    """
-    Hash simple y estable de la imagen.
+def compute_tile_hash(image: "Image.Image") -> int:
+    """dHash 64-bit: grayscale -> 9x8 -> diffs horizontales."""
+    if Image is None:  # pragma: no cover
+        raise RuntimeError("pillow_not_available")
+    gray = image.convert("L").resize((9, 8), resample=_RESAMPLE)
+    px = list(gray.getdata())
+    value = 0
+    for row in range(8):
+        base = row * 9
+        for col in range(8):
+            left = int(px[base + col])
+            right = int(px[base + col + 1])
+            bit = 1 if left > right else 0
+            value = (value << 1) | bit
+    return int(value)
 
-    Usamos un md5 de la versión RGB. Para reducir sensibilidad a variaciones mínimas
-    (como un píxel en el borde entre tiles), el llamador se encarga de recortar un
-    pequeño borde antes de pasar la imagen aquí.
-    """
-    buf = img.convert("RGB").tobytes()
-    return hashlib.md5(buf).hexdigest()
+
+def hamming_distance(first: int, second: int) -> int:
+    return (int(first) ^ int(second)).bit_count()
 
 
-def _hamming_distance(h1: str, h2: str) -> int:
-    # imagehash devuelve hex string; convertimos a int y calculamos distancia de bits
-    try:
-        i1 = int(h1, 16)
-        i2 = int(h2, 16)
-        return (i1 ^ i2).bit_count()
-    except Exception:
-        # Fallback: distancia por caracteres
-        return sum(c1 != c2 for c1, c2 in zip(h1, h2))
+def tile_changed(previous_hash: Optional[int], current_hash: int, threshold: int = 6) -> bool:
+    if previous_hash is None:
+        return True
+    thr = max(0, int(threshold))
+    return hamming_distance(int(previous_hash), int(current_hash)) > thr
 
 
 @dataclass
@@ -64,9 +66,9 @@ class DeltaVisionState:
     tile_size: int = 256
     tiles_per_row: int = 0
     tiles_per_col: int = 0
-    last_frame_hash: Optional[str] = None
-    last_tile_hashes: Dict[int, str] = field(default_factory=dict)
-    known_tile_hashes: Dict[int, set] = field(default_factory=dict)
+    last_frame_hash: Optional[int] = None
+    last_tile_hashes: Dict[int, int] = field(default_factory=dict)
+    known_tile_hashes: Dict[int, set[int]] = field(default_factory=dict)
     last_change_ts: Dict[int, float] = field(default_factory=dict)
 
     @classmethod
@@ -77,8 +79,8 @@ class DeltaVisionState:
         return cls(screen_size=screen_size, tile_size=tile_size, tiles_per_row=tpr, tiles_per_col=tpc)
 
 
-def compute_screen_hash(frame: "Image.Image") -> str:
-    return _phash(frame)
+def compute_screen_hash(frame: "Image.Image") -> int:
+    return compute_tile_hash(frame)
 
 
 def divide_into_tiles(frame: "Image.Image", tile_size: int) -> Dict[int, "Image.Image"]:
@@ -114,14 +116,10 @@ def detect_changed_tiles(
     changed: List[int] = []
     for idx, img in tiles.items():
         img_for_hash = _trim_border(img)
-        h_new = _phash(img_for_hash)
+        h_new = compute_tile_hash(img_for_hash)
         h_prev = state.last_tile_hashes.get(idx)
-        if h_prev is None:
+        if tile_changed(h_prev, h_new, threshold=threshold):
             changed.append(idx)
-        else:
-            dist = _hamming_distance(h_new, h_prev)
-            if dist >= threshold:
-                changed.append(idx)
         state.last_tile_hashes[idx] = h_new
     state.last_frame_hash = compute_screen_hash(frame)
     return changed

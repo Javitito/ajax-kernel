@@ -37,6 +37,20 @@ try:
 except Exception:
     run_topology_doctor = None  # type: ignore
 try:
+    from agency.boot_watchdog import (
+        run_doctor_boot,
+        run_tasks_audit as run_boot_tasks_audit,
+        run_tasks_ensure as run_boot_tasks_ensure,
+        run_lab_ensure as run_boot_lab_ensure,
+        unsupported_platform_payload as boot_unsupported_platform_payload,
+    )
+except Exception:
+    run_doctor_boot = None  # type: ignore
+    run_boot_tasks_audit = None  # type: ignore
+    run_boot_tasks_ensure = None  # type: ignore
+    run_boot_lab_ensure = None  # type: ignore
+    boot_unsupported_platform_payload = None  # type: ignore
+try:
     from agency.lab_autopilot import (
         AutopilotTickOptions,
         run_autopilot_tick,
@@ -5467,6 +5481,82 @@ def cmd_doctor_anchor(args: argparse.Namespace) -> int:
     return 0 if bool(payload.get("ok")) else 2
 
 
+def cmd_doctor_boot(args: argparse.Namespace) -> int:
+    if run_doctor_boot is None:
+        print("Doctor boot no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    rail = str(getattr(args, "rail", None) or _resolve_rail() or "lab").strip().lower()
+    try:
+        payload = run_doctor_boot(ROOT, rail=rail)
+    except Exception as exc:
+        print(f"Fallo al ejecutar doctor boot: {exc}", file=sys.stderr)
+        return 2
+    if not bool(getattr(args, "json", False)):
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            print(summary)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
+def cmd_ops_tasks_audit(args: argparse.Namespace) -> int:
+    if run_boot_tasks_audit is None:
+        print("ops tasks audit no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        payload = run_boot_tasks_audit(ROOT)
+    except Exception as exc:
+        print(f"Fallo al ejecutar ops tasks audit: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if str(payload.get("status") or "").upper() == "UNSUPPORTED_PLATFORM":
+        return 0
+    return 0 if bool(payload.get("ok")) else 2
+
+
+def cmd_ops_tasks_ensure(args: argparse.Namespace) -> int:
+    if run_boot_tasks_ensure is None:
+        print("ops tasks ensure no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    apply = bool(getattr(args, "apply", False))
+    try:
+        payload = run_boot_tasks_ensure(ROOT, apply=apply)
+    except Exception as exc:
+        print(f"Fallo al ejecutar ops tasks ensure: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if str(payload.get("status") or "").upper() == "UNSUPPORTED_PLATFORM":
+        return 0
+    if not apply:
+        return 0
+    return 0 if bool(payload.get("ok")) else 2
+
+
+def cmd_lab_ensure(args: argparse.Namespace) -> int:
+    if run_boot_lab_ensure is None:
+        print("lab ensure no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    rail = str(getattr(args, "rail", None) or _resolve_rail() or "lab").strip().lower()
+    try:
+        payload = run_boot_lab_ensure(ROOT, rail=rail)
+    except Exception as exc:
+        print(f"Fallo al ejecutar lab ensure: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    apply_payload = payload.get("apply") if isinstance(payload.get("apply"), dict) else {}
+    if str(apply_payload.get("status") or "").upper() == "UNSUPPORTED_PLATFORM":
+        if boot_unsupported_platform_payload is not None:
+            print(
+                json.dumps(
+                    boot_unsupported_platform_payload(command="lab ensure"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        return 0
+    return 0 if bool(payload.get("ok")) else 2
+
+
 def cmd_doctor_provider_alias(args: argparse.Namespace) -> int:
     print("Alias detectado: `doctor provider` -> `doctor providers`.")
     return cmd_doctor_providers(args)
@@ -7956,6 +8046,12 @@ def main(argv=None) -> int:
     p_lab_init.add_argument("--driver-url", help="Override URL del driver LAB al arrancar.")
     p_lab_init.add_argument("--worker-id", help="Override ID del worker al arrancar.")
     p_lab_init.set_defaults(func=cmd_lab_init)
+    p_lab_ensure = lab_sub.add_parser(
+        "ensure",
+        help="Arranque/recuperación idempotente del rail (start + verify fail-closed).",
+    )
+    p_lab_ensure.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_lab_ensure.set_defaults(func=cmd_lab_ensure)
     p_lab_autopilot = lab_sub.add_parser(
         "autopilot",
         help="LAB Autopilot v0 (gates fail-closed + micro-work-item SAFE).",
@@ -8225,6 +8321,13 @@ def main(argv=None) -> int:
     )
     p_doctor_anchor.add_argument("--rail", choices=["lab", "prod"], help="Rail objetivo.")
     p_doctor_anchor.set_defaults(func=cmd_doctor_anchor)
+    p_doctor_boot = doctor_sub.add_parser(
+        "boot",
+        help="Diagnóstico de boot/watchdog (tasks, puertos, worker heartbeat, providers TTL).",
+    )
+    p_doctor_boot.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_doctor_boot.add_argument("--json", action="store_true", help="Solo JSON (sin resumen textual).")
+    p_doctor_boot.set_defaults(func=cmd_doctor_boot)
     p_doctor_providers = doctor_sub.add_parser(
         "providers", help="Self-test rápido de proveedores Brain."
     )
@@ -8338,7 +8441,7 @@ def main(argv=None) -> int:
     )
     p_incident_open.set_defaults(func=cmd_incident_open)
 
-    p_crystallize = sub.add_parser("crystallize", help="Pipeline: misión → episodio → recipe.")
+    p_crystallize = sub.add_parser("crystallize", help="Pipeline: mision -> episodio -> recipe.")
     crys_sub = p_crystallize.add_subparsers(dest="crystallize_cmd", required=True)
     p_crystallize_mission = crys_sub.add_parser(
         "mission", help="Genera Episode + Candidate Recipe desde una misión."
@@ -8522,6 +8625,24 @@ def main(argv=None) -> int:
         help="Edad mínima en horas para archivar waiting_for_user (default 24).",
     )
     p_ops_friction_gc.set_defaults(func=cmd_ops_friction_gc)
+    p_ops_tasks = ops_sub.add_parser(
+        "tasks",
+        help="Audita y asegura tareas de boot/watchdog bajo \\AJAX\\.",
+    )
+    ops_tasks_sub = p_ops_tasks.add_subparsers(dest="ops_tasks_cmd", required=True)
+    p_ops_tasks_audit = ops_tasks_sub.add_parser(
+        "audit",
+        help="Auditoría read-only de expected vs actual (incluye XML export).",
+    )
+    p_ops_tasks_audit.set_defaults(func=cmd_ops_tasks_audit)
+    p_ops_tasks_ensure = ops_tasks_sub.add_parser(
+        "ensure",
+        help="Asegura configuración canónica de tareas (dry-run/apply).",
+    )
+    ensure_mode = p_ops_tasks_ensure.add_mutually_exclusive_group(required=True)
+    ensure_mode.add_argument("--dry-run", action="store_true", help="Solo planifica, sin registrar tareas.")
+    ensure_mode.add_argument("--apply", action="store_true", help="Crea/actualiza tareas según manifest.")
+    p_ops_tasks_ensure.set_defaults(func=cmd_ops_tasks_ensure)
 
     args = parser.parse_args(argv)
     if args.command == "health":
