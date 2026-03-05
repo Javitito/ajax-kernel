@@ -51,6 +51,18 @@ except Exception:
     run_boot_lab_ensure = None  # type: ignore
     boot_unsupported_platform_payload = None  # type: ignore
 try:
+    from agency.vision_tag_screen import (
+        tag_screen_with_delta,
+        run_doctor_vision as run_vision_doctor,
+    )
+except Exception:
+    tag_screen_with_delta = None  # type: ignore
+    run_vision_doctor = None  # type: ignore
+try:
+    from agency.vision_gate import set_local_vision_allowed_for_process
+except Exception:
+    set_local_vision_allowed_for_process = None  # type: ignore
+try:
     from agency.lab_autopilot import (
         AutopilotTickOptions,
         run_autopilot_tick,
@@ -7145,6 +7157,73 @@ def cmd_vision_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_vision_tag_screen(args: argparse.Namespace) -> int:
+    if tag_screen_with_delta is None:
+        print("vision_tag_screen_unavailable", file=sys.stderr)
+        return 3
+    allow_local = bool(getattr(args, "allow_local", False))
+    if allow_local and set_local_vision_allowed_for_process is not None:
+        try:
+            set_local_vision_allowed_for_process(True)
+        except Exception:
+            pass
+    rows = int(getattr(args, "rows", 4) or 4)
+    cols = int(getattr(args, "cols", 4) or 4)
+    threshold = getattr(args, "threshold", None)
+    provider_override = getattr(args, "provider", None)
+    try:
+        payload = tag_screen_with_delta(
+            rows=rows,
+            cols=cols,
+            threshold=int(threshold) if threshold is not None else None,
+            provider_used=str(provider_override) if provider_override else None,
+            root_dir=ROOT,
+            allow_local=allow_local,
+        )
+        payload.setdefault("schema", "ajax.vision.tag_screen.v1")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    except PermissionError as exc:
+        out = {
+            "schema": "ajax.vision.tag_screen.v1",
+            "ok": False,
+            "status": "BLOCKED",
+            "error": str(exc),
+            "next_hint": [
+                "set VISION_LOCAL_ALLOWED=true",
+                "python bin/ajaxctl vision tag-screen --allow-local",
+            ],
+        }
+        _write_vision_error_receipt(ROOT, out)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 2
+    except Exception as exc:
+        out = {
+            "schema": "ajax.vision.tag_screen.v1",
+            "ok": False,
+            "status": "ERROR",
+            "error": str(exc),
+        }
+        _write_vision_error_receipt(ROOT, out)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 2
+
+
+def cmd_doctor_vision(args: argparse.Namespace) -> int:
+    if run_vision_doctor is None:
+        print("doctor_vision_unavailable", file=sys.stderr)
+        return 3
+    payload = run_vision_doctor(root_dir=ROOT)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            print(summary)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_retry_fresh(args: argparse.Namespace) -> int:
     mission_id = str(args.mission_id or "").strip()
     if not mission_id:
@@ -7942,6 +8021,31 @@ def main(argv=None) -> int:
     p_vision_status.add_argument("--timeout", type=float, help="Timeout en segundos (override).")
     p_vision_status.add_argument("--json", action="store_true", help="Salida JSON.")
     p_vision_status.set_defaults(func=cmd_vision_status)
+    p_vision = sub.add_parser("vision", help="Operaciones de visión local.")
+    vision_sub = p_vision.add_subparsers(dest="vision_cmd", required=True)
+    p_vision_tag = vision_sub.add_parser(
+        "tag-screen",
+        help="Taggea pantalla por grid usando delta real para saltar OCR en tiles unchanged.",
+    )
+    p_vision_tag.add_argument("--rows", type=int, default=4, help="Filas del grid.")
+    p_vision_tag.add_argument("--cols", type=int, default=4, help="Columnas del grid.")
+    p_vision_tag.add_argument(
+        "--threshold",
+        type=int,
+        default=None,
+        help="Threshold Hamming para considerar unchanged (default 6 o env).",
+    )
+    p_vision_tag.add_argument(
+        "--allow-local",
+        action="store_true",
+        help="Override por proceso para permitir visión local en este comando.",
+    )
+    p_vision_tag.add_argument(
+        "--provider",
+        default=None,
+        help="Override manual de provider_used en artifact delta.",
+    )
+    p_vision_tag.set_defaults(func=cmd_vision_tag_screen)
 
     p_chat = sub.add_parser("chat", help="Inicia una sesión interactiva (loop).")
     p_chat.add_argument(
@@ -8328,6 +8432,12 @@ def main(argv=None) -> int:
     p_doctor_boot.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
     p_doctor_boot.add_argument("--json", action="store_true", help="Solo JSON (sin resumen textual).")
     p_doctor_boot.set_defaults(func=cmd_doctor_boot)
+    p_doctor_vision = doctor_sub.add_parser(
+        "vision",
+        help="Diagnóstico de gate de visión local, provider local y métricas delta.",
+    )
+    p_doctor_vision.add_argument("--json", action="store_true", help="Solo JSON.")
+    p_doctor_vision.set_defaults(func=cmd_doctor_vision)
     p_doctor_providers = doctor_sub.add_parser(
         "providers", help="Self-test rápido de proveedores Brain."
     )
