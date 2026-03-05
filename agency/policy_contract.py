@@ -88,7 +88,8 @@ def validate_policy_contract(
     loaded_docs: Dict[str, Dict[str, Any]] = {}
 
     for abs_path in required_abs:
-        rel = str(abs_path.relative_to(root))
+        # Normalizamos a POSIX para que las claves sean estables en Windows/Linux.
+        rel = abs_path.relative_to(root).as_posix()
         if not abs_path.exists():
             missing_files.append(rel)
             continue
@@ -126,7 +127,7 @@ def validate_policy_contract(
         "ok": ok,
         "status": status,
         "reason": reason,
-        "required_files": [str(path.relative_to(root)) for path in required_abs],
+        "required_files": [path.relative_to(root).as_posix() for path in required_abs],
         "missing_files": missing_files,
         "invalid_files": invalid_files,
         "derived_files": derived_files,
@@ -137,7 +138,7 @@ def validate_policy_contract(
         ok=ok,
         status=status,
         reason=reason,
-        required_files=[str(path.relative_to(root)) for path in required_abs],
+        required_files=[path.relative_to(root).as_posix() for path in required_abs],
         missing_files=missing_files,
         invalid_files=invalid_files,
         derived_files=derived_files,

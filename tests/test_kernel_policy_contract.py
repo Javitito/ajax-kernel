@@ -52,3 +52,17 @@ def test_policy_contract_syncs_provider_policy_json_from_yaml(tmp_path: Path) ->
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload.get("schema") == "ajax.provider_policy.v1"
     assert payload.get("providers", {}).get("groq", {}).get("cost_class") == "generous"
+
+
+def test_policy_contract_required_files_are_posix_stable(tmp_path: Path) -> None:
+    cfg = tmp_path / "config"
+    _write(cfg / "provider_policy.yaml", "schema: ajax.provider_policy.v1\nproviders: {}\n")
+    _write(cfg / "provider_failure_policy.yaml", "planning:\n  max_attempts: 2\n")
+
+    result = validate_policy_contract(tmp_path, sync_json=False, write_receipt=False)
+
+    # Why: evitar drift por separador de rutas entre Windows/Linux.
+    assert result.required_files == [
+        "config/provider_policy.yaml",
+        "config/provider_failure_policy.yaml",
+    ]
