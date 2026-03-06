@@ -60,6 +60,14 @@ _MODE_TO_COST_MODE = {
     "balanced": "balanced",
     "strong": "premium",
 }
+_ROLE_TIMEOUT_SECONDS = {
+    "scout": 6,
+    "auditor": 10,
+    "coder": 12,
+    "planner": 14,
+    "judge": 14,
+}
+_BLOCKED_REASON_CODES = {"auth_missing", "auth_invalid", "auth_expired", "cli_not_installed", "config_missing"}
 
 
 def _utc_now() -> str:
@@ -246,17 +254,7 @@ def _fallback_ladder_from_inventory(
     return out
 
 
-def _provider_runtime_map(root_dir: Path) -> Dict[str, Dict[str, Any]]:
-    if collect_provider_auth_diagnostics is None:
-        return {}
-    try:
-        payload = collect_provider_auth_diagnostics(
-            root_dir=Path(root_dir).resolve(),
-            include_probes=False,
-            write_artifact=False,
-        )
-    except Exception:
-        return {}
+def _provider_runtime_map_from_payload(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     rows = payload.get("providers") if isinstance(payload.get("providers"), list) else []
     out: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -267,6 +265,151 @@ def _provider_runtime_map(root_dir: Path) -> Dict[str, Dict[str, Any]]:
             continue
         out[provider] = dict(row)
     return out
+
+
+def _latest_auth_runtime_payload(root_dir: Path) -> Dict[str, Any]:
+    audits_dir = Path(root_dir).resolve() / "artifacts" / "audits"
+    if not audits_dir.exists():
+        return {}
+    candidates = sorted(
+        audits_dir.glob("auth_provider_*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return {}
+    payload = _read_doc(candidates[0])
+    if not isinstance(payload.get("providers"), list):
+        return {}
+    return payload
+
+
+def _live_auth_runtime_payload(root_dir: Path) -> Dict[str, Any]:
+    if collect_provider_auth_diagnostics is None:
+        return {}
+    try:
+        return collect_provider_auth_diagnostics(
+            root_dir=Path(root_dir).resolve(),
+            include_probes=False,
+            write_artifact=False,
+        )
+    except Exception:
+        return {}
+
+
+def _provider_runtime_map(root_dir: Path) -> Dict[str, Dict[str, Any]]:
+    cached = _latest_auth_runtime_payload(root_dir)
+    if cached:
+        return _provider_runtime_map_from_payload(cached)
+    live = _live_auth_runtime_payload(root_dir)
+    if live:
+        return _provider_runtime_map_from_payload(live)
+    return {}
+
+
+def _runtime_quality_rank(row: Dict[str, Any]) -> int:
+    effective = str(row.get("effective_result") or "").strip().lower()
+    if effective == "usable":
+        return 0
+    if effective == "degraded":
+        return 1
+    if effective == "blocked":
+        return 3
+    return 2
+
+
+def _role_tier_rank(role: str, tier: str) -> int:
+    tier_n = str(tier or "balanced").strip().lower()
+    role_c = canonical_role(role)
+    if role_c in {"planner", "judge", "coder"}:
+        order = {"premium": 0, "balanced": 1, "cheap": 2}
+        return order.get(tier_n, 3)
+    if role_c == "auditor":
+        order = {"balanced": 0, "cheap": 1, "premium": 2}
+        return order.get(tier_n, 3)
+    return {"cheap": 0, "balanced": 1, "premium": 2}.get(tier_n, 3)
+
+
+def resolve_effective_role_strategy(
+    *,
+    role: str,
+    ladder: List[str],
+    providers_cfg: Dict[str, Dict[str, Any]],
+    auth_snapshot: Dict[str, Dict[str, Any]],
+    host_capabilities: Optional[Dict[str, Any]] = None,
+    coder_provider: Optional[str] = None,
+) -> Dict[str, Any]:
+    role_c = canonical_role(role)
+    host_caps = host_capabilities or {}
+    discarded: List[Dict[str, str]] = []
+    candidates: List[str] = []
+    for provider in ladder:
+        row = auth_snapshot.get(provider) or {}
+        reason_code = str(row.get("reason_code") or "").strip()
+        effective = str(row.get("effective_result") or "").strip().lower()
+        if reason_code in _BLOCKED_REASON_CODES or effective == "blocked":
+            discarded.append({"provider": provider, "reason_code": reason_code or "blocked"})
+            continue
+        candidates.append(provider)
+
+    pos = {provider: idx for idx, provider in enumerate(candidates)}
+
+    def _sort_key(provider: str) -> Any:
+        cfg = providers_cfg.get(provider, {})
+        row = auth_snapshot.get(provider, {})
+        runtime_rank = _runtime_quality_rank(row if isinstance(row, dict) else {})
+        tier_rank = _role_tier_rank(role_c, _provider_tier(cfg))
+        local_rank = 0 if _is_local_provider(provider, cfg) else 1
+        base = pos.get(provider, 999)
+        if role_c == "scout":
+            return (runtime_rank, local_rank, _tier_priority("cheap", _provider_tier(cfg)), base)
+        if role_c in {"planner", "judge"}:
+            return (runtime_rank, tier_rank, local_rank, base)
+        if role_c == "coder":
+            return (runtime_rank, tier_rank, local_rank, base)
+        return (runtime_rank, tier_rank, local_rank, base)
+
+    ordered = sorted(candidates, key=_sort_key)
+
+    if role_c == "auditor" and coder_provider and ordered:
+        coder_n = str(coder_provider).strip()
+        if ordered[0] == coder_n:
+            for idx, provider in enumerate(ordered):
+                if provider != coder_n:
+                    ordered.insert(0, ordered.pop(idx))
+                    break
+        if len(ordered) == 1 and ordered[0] == coder_n:
+            discarded.append({"provider": coder_n, "reason_code": "only_provider_usable"})
+
+    availability_by_provider: Dict[str, Dict[str, Any]] = {}
+    for provider in ordered:
+        row = auth_snapshot.get(provider)
+        if not isinstance(row, dict):
+            continue
+        availability_by_provider[provider] = {
+            "effective_result": row.get("effective_result"),
+            "reason_code": row.get("reason_code"),
+            "reachability_state": row.get("reachability_state"),
+            "auth_state": row.get("auth_state"),
+            "quota_state": row.get("quota_state"),
+        }
+
+    model_by_provider: Dict[str, Optional[str]] = {}
+    mode = str(host_caps.get("mode") or role_to_mode(role_c))
+    for provider in ordered:
+        model_by_provider[provider] = _pick_model_for_provider(providers_cfg.get(provider, {}), mode)
+
+    preferred_provider = ordered[0] if ordered else None
+    preferred_model = model_by_provider.get(preferred_provider) if preferred_provider else None
+    return {
+        "provider_ladder": ordered,
+        "preferred_provider": preferred_provider,
+        "preferred_model": preferred_model,
+        "fallback_providers": ordered[1:] if len(ordered) > 1 else [],
+        "model_by_provider": model_by_provider,
+        "availability_by_provider": availability_by_provider,
+        "discarded_providers": discarded,
+    }
 
 
 def resolve_role_strategy(
@@ -306,7 +449,7 @@ def resolve_role_strategy(
             if provider not in ladder:
                 ladder.append(provider)
 
-    filtered: List[str] = []
+    role_ladder: List[str] = []
     for provider in ladder:
         cfg = providers_cfg.get(provider)
         if not isinstance(cfg, dict):
@@ -315,97 +458,47 @@ def resolve_role_strategy(
             continue
         if not _provider_supports_role(cfg, provider_role):
             continue
-        filtered.append(provider)
-
-    if filtered:
-        original_pos = {provider: idx for idx, provider in enumerate(filtered)}
-        if mode == "cheap":
-            filtered = sorted(
-                filtered,
-                key=lambda provider: (
-                    0 if _is_local_provider(provider, providers_cfg.get(provider, {})) else 1,
-                    _tier_priority(mode, _provider_tier(providers_cfg.get(provider, {}))),
-                    original_pos.get(provider, 999),
-                ),
-            )
-        else:
-            filtered = sorted(
-                filtered,
-                key=lambda provider: (
-                    _tier_priority(mode, _provider_tier(providers_cfg.get(provider, {}))),
-                    original_pos.get(provider, 999),
-                ),
-            )
+        role_ladder.append(provider)
 
     runtime_map = _provider_runtime_map(root)
-    suppressed_providers: List[Dict[str, str]] = []
+    effective = resolve_effective_role_strategy(
+        role=role_c,
+        ladder=role_ladder,
+        providers_cfg=providers_cfg,
+        auth_snapshot=runtime_map,
+        host_capabilities={"mode": mode, "rail": rail_n},
+        coder_provider=coder_provider,
+    )
+    filtered = effective.get("provider_ladder") if isinstance(effective.get("provider_ladder"), list) else []
+    filtered = [str(provider) for provider in filtered if str(provider).strip()]
+    discarded_providers = (
+        effective.get("discarded_providers") if isinstance(effective.get("discarded_providers"), list) else []
+    )
+
+    suppressed_providers: List[Dict[str, str]] = [
+        {"provider": str(item.get("provider") or ""), "reason_code": str(item.get("reason_code") or "")}
+        for item in discarded_providers
+        if isinstance(item, dict) and str(item.get("provider") or "").strip()
+    ]
     deprioritized_providers: List[Dict[str, str]] = []
-    if filtered and runtime_map:
-        blocked_codes = {"auth_missing", "auth_invalid", "auth_expired", "cli_not_installed", "config_missing"}
-        has_usable = any(
-            str((runtime_map.get(provider) or {}).get("effective_result") or "") == "usable"
-            for provider in filtered
-        )
-        if has_usable:
-            kept: List[str] = []
-            for provider in filtered:
-                row = runtime_map.get(provider) or {}
-                reason_code = str(row.get("reason_code") or "")
-                if reason_code in blocked_codes:
-                    suppressed_providers.append({"provider": provider, "reason_code": reason_code})
-                    continue
-                kept.append(provider)
-            if kept:
-                filtered = kept
-
-        if role_c == "scout" and filtered:
-            healthy: List[str] = []
-            degraded: List[str] = []
-            for provider in filtered:
-                row = runtime_map.get(provider) or {}
-                reason_code = str(row.get("reason_code") or "")
-                if reason_code in {"provider_timeout", "provider_down", "quota_exhausted"}:
-                    degraded.append(provider)
-                    deprioritized_providers.append({"provider": provider, "reason_code": reason_code})
-                    continue
-                healthy.append(provider)
-            if healthy:
-                filtered = healthy + degraded
-
-    if role_c == "auditor" and coder_provider and filtered:
-        coder_n = str(coder_provider).strip()
-        if filtered[0] == coder_n:
-            for idx, provider in enumerate(filtered):
-                if provider != coder_n:
-                    filtered.insert(0, filtered.pop(idx))
-                    break
-
-    model_by_provider: Dict[str, Optional[str]] = {}
     for provider in filtered:
-        cfg = providers_cfg.get(provider, {})
-        model_by_provider[provider] = _pick_model_for_provider(cfg, mode)
+        row = runtime_map.get(provider) or {}
+        reason_code = str(row.get("reason_code") or "")
+        if reason_code in {"provider_timeout", "provider_down", "quota_exhausted"}:
+            deprioritized_providers.append({"provider": provider, "reason_code": reason_code})
 
-    availability_by_provider: Dict[str, Dict[str, Any]] = {}
-    for provider in filtered:
-        row = runtime_map.get(provider)
-        if isinstance(row, dict):
-            availability_by_provider[provider] = {
-                "effective_result": row.get("effective_result"),
-                "reason_code": row.get("reason_code"),
-                "reachability_state": row.get("reachability_state"),
-                "auth_state": row.get("auth_state"),
-                "quota_state": row.get("quota_state"),
-            }
+    model_by_provider = effective.get("model_by_provider") if isinstance(effective.get("model_by_provider"), dict) else {}
+    availability_by_provider = (
+        effective.get("availability_by_provider") if isinstance(effective.get("availability_by_provider"), dict) else {}
+    )
+    preferred_provider = effective.get("preferred_provider")
+    preferred_provider = str(preferred_provider).strip() if isinstance(preferred_provider, str) else None
+    preferred_model = effective.get("preferred_model")
+    preferred_model = str(preferred_model).strip() if isinstance(preferred_model, str) else None
 
-    preferred_provider = filtered[0] if filtered else None
-    preferred_model = model_by_provider.get(preferred_provider) if preferred_provider else None
-    timeout_seconds = int(timeout_map.get(default_tier) or 20)
-    if preferred_provider:
-        cfg = providers_cfg.get(preferred_provider, {})
-        try:
-            timeout_seconds = int(cfg.get("timeout_seconds") or timeout_seconds)
-        except Exception:
-            pass
+    tier_timeout = int(timeout_map.get(default_tier) or 20)
+    role_timeout = int(_ROLE_TIMEOUT_SECONDS.get(role_c) or tier_timeout)
+    timeout_seconds = max(1, max(tier_timeout, role_timeout))
 
     next_hint: List[str] = []
     if not filtered:
@@ -415,6 +508,10 @@ def resolve_role_strategy(
             "python bin/ajaxctl doctor auth",
             "revisa config/provider_policy.yaml y config/model_providers.yaml",
         ]
+    if role_c == "auditor" and coder_provider and filtered:
+        coder_n = str(coder_provider).strip()
+        if len(filtered) == 1 and filtered[0] == coder_n:
+            next_hint.append("solo hay un provider usable para auditor; comparte provider con coder")
 
     return {
         "schema": "ajax.council.role_strategy.v1",
@@ -424,12 +521,13 @@ def resolve_role_strategy(
         "cost_mode": mode_to_cost_mode(mode),
         "default_tier": default_tier,
         "preferred_provider": preferred_provider,
-        "fallback_providers": filtered[1:] if len(filtered) > 1 else [],
+        "fallback_providers": effective.get("fallback_providers") if isinstance(effective.get("fallback_providers"), list) else (filtered[1:] if len(filtered) > 1 else []),
         "provider_ladder": filtered,
         "preferred_model": preferred_model,
         "model_by_provider": model_by_provider,
         "availability_by_provider": availability_by_provider,
         "suppressed_providers": suppressed_providers,
+        "discarded_providers": discarded_providers,
         "deprioritized_providers": deprioritized_providers,
         "timeout_seconds": max(1, int(timeout_seconds)),
         "retries": retries,
@@ -503,23 +601,10 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
     root = Path(root_dir).resolve()
     strategies = resolve_strategy_map(root)
     providers_cfg = _load_model_providers(root)
-    auth_runtime = (
-        collect_provider_auth_diagnostics(
-            root_dir=root,
-            include_probes=False,
-            write_artifact=False,
-        )
-        if collect_provider_auth_diagnostics is not None
-        else {}
-    )
-    runtime_rows = auth_runtime.get("providers") if isinstance(auth_runtime.get("providers"), list) else []
-    runtime_map: Dict[str, Dict[str, Any]] = {}
-    for row in runtime_rows:
-        if not isinstance(row, dict):
-            continue
-        provider_name = str(row.get("provider_name") or "").strip()
-        if provider_name:
-            runtime_map[provider_name] = dict(row)
+    auth_runtime = _latest_auth_runtime_payload(root)
+    if not auth_runtime:
+        auth_runtime = _live_auth_runtime_payload(root)
+    runtime_map = _provider_runtime_map_from_payload(auth_runtime) if auth_runtime else {}
 
     providers_in_use: List[str] = []
     for role in COUNCIL_EXEC_ROLES:
@@ -604,6 +689,26 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
     blocked_providers = [str(item) for item in blocked_providers if str(item)]
     timeout_providers = [str(item) for item in timeout_providers if str(item)]
 
+    effective_roles: Dict[str, Dict[str, Any]] = {}
+    for role in COUNCIL_EXEC_ROLES:
+        strategy = strategies.get(role) if isinstance(strategies.get(role), dict) else {}
+        fallbacks = strategy.get("fallback_providers") if isinstance(strategy.get("fallback_providers"), list) else []
+        discarded = strategy.get("discarded_providers") if isinstance(strategy.get("discarded_providers"), list) else []
+        effective_roles[role] = {
+            "preferred_provider": strategy.get("preferred_provider"),
+            "fallback_providers": [str(item) for item in fallbacks if str(item).strip()],
+            "discarded_providers": [
+                {
+                    "provider": str(item.get("provider") or ""),
+                    "reason_code": str(item.get("reason_code") or ""),
+                }
+                for item in discarded
+                if isinstance(item, dict) and str(item.get("provider") or "").strip()
+            ],
+            "timeout_seconds": int(strategy.get("timeout_seconds") or 0),
+            "mode": strategy.get("mode"),
+        }
+
     last_by_role: Dict[str, Optional[Dict[str, Any]]] = {}
     for role in COUNCIL_EXEC_ROLES:
         last_by_role[role] = _latest_role_subcall(root, role)
@@ -646,6 +751,7 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
             "schema": auth_runtime.get("schema"),
             "summary_counts": auth_runtime.get("summary_counts"),
         },
+        "effective_roles": effective_roles,
         "last_subcall_by_role": last_by_role,
         "executable": bool(executable),
         "next_hint": dedup_hints,
@@ -662,10 +768,24 @@ def format_doctor_council_summary(payload: Dict[str, Any]) -> str:
     if roles:
         lines.append("roles: " + ", ".join(str(role) for role in roles))
     strategies = payload.get("strategies") if isinstance(payload.get("strategies"), dict) else {}
+    effective_roles = payload.get("effective_roles") if isinstance(payload.get("effective_roles"), dict) else {}
     for role in COUNCIL_EXEC_ROLES:
         strategy = strategies.get(role) if isinstance(strategies.get(role), dict) else {}
+        compact = effective_roles.get(role) if isinstance(effective_roles.get(role), dict) else {}
+        fallbacks = compact.get("fallback_providers") if isinstance(compact.get("fallback_providers"), list) else []
+        discarded = compact.get("discarded_providers") if isinstance(compact.get("discarded_providers"), list) else []
+        discarded_tokens: List[str] = []
+        for item in discarded:
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider") or "").strip()
+            reason = str(item.get("reason_code") or "").strip()
+            if provider:
+                discarded_tokens.append(f"{provider}:{reason or 'discarded'}")
+        timeout_s = compact.get("timeout_seconds")
         lines.append(
-            f"{role}: mode={strategy.get('mode')} provider={strategy.get('preferred_provider') or 'none'} model={strategy.get('preferred_model') or 'none'}"
+            f"{role}: mode={strategy.get('mode')} provider={strategy.get('preferred_provider') or 'none'} model={strategy.get('preferred_model') or 'none'} "
+            f"fallbacks=[{','.join(str(item) for item in fallbacks)}] discarded=[{','.join(discarded_tokens)}] timeout_s={timeout_s}"
         )
     auth_doc = payload.get("auth_config") if isinstance(payload.get("auth_config"), dict) else {}
     missing_auth = auth_doc.get("missing_auth_providers") if isinstance(auth_doc.get("missing_auth_providers"), list) else []
@@ -721,6 +841,8 @@ def run_council_demo(
         strategy = resolve_role_strategy(root, role)
         tier = str(strategy.get("default_tier") or "T1")
         retries = int(strategy.get("retries") or 2)
+        provider_ladder = strategy.get("provider_ladder") if isinstance(strategy.get("provider_ladder"), list) else []
+        discarded = strategy.get("discarded_providers") if isinstance(strategy.get("discarded_providers"), list) else []
         try:
             outcome = subcall_runner(
                 root_dir=root,
@@ -744,6 +866,15 @@ def run_council_demo(
                     "receipt_path": getattr(outcome, "receipt_path", None),
                     "artifact_path": getattr(outcome, "role_artifact_path", None),
                     "ladder_tried": getattr(outcome, "ladder_tried", []),
+                    "provider_ladder": [str(item) for item in provider_ladder if str(item).strip()],
+                    "discarded_providers": [
+                        {
+                            "provider": str(item.get("provider") or ""),
+                            "reason_code": str(item.get("reason_code") or ""),
+                        }
+                        for item in discarded
+                        if isinstance(item, dict) and str(item.get("provider") or "").strip()
+                    ],
                 }
             )
         except Exception as exc:
@@ -759,6 +890,15 @@ def run_council_demo(
                     "artifact_path": None,
                     "error": str(exc)[:240],
                     "ladder_tried": [],
+                    "provider_ladder": [str(item) for item in provider_ladder if str(item).strip()],
+                    "discarded_providers": [
+                        {
+                            "provider": str(item.get("provider") or ""),
+                            "reason_code": str(item.get("reason_code") or ""),
+                        }
+                        for item in discarded
+                        if isinstance(item, dict) and str(item.get("provider") or "").strip()
+                    ],
                 }
             )
 

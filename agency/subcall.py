@@ -49,7 +49,10 @@ def _now_ts() -> float:
 
 
 def _ts_slug(ts: Optional[float] = None) -> str:
-    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(ts or _now_ts()))
+    ts_value = float(ts if ts is not None else _now_ts())
+    base = time.strftime("%Y%m%dT%H%M%S", time.gmtime(ts_value))
+    millis = int((ts_value - int(ts_value)) * 1000)
+    return f"{base}{millis:03d}Z"
 
 
 def _env_truthy(name: str) -> bool:
@@ -381,15 +384,22 @@ def _load_subcall_timeout_map(root_dir: Path) -> Dict[str, int]:
     return out
 
 
-def _resolve_subcall_timeout_seconds(*, cfg: Dict[str, Any], tier: str, tier_timeout_map: Dict[str, int]) -> int:
+def _resolve_subcall_timeout_seconds(
+    *,
+    cfg: Dict[str, Any],
+    tier: str,
+    tier_timeout_map: Dict[str, int],
+    strategy_timeout_seconds: Optional[int] = None,
+) -> int:
     provider_timeout = int(cfg.get("timeout_seconds") or 60)
+    strategy_timeout = int(strategy_timeout_seconds or provider_timeout)
     tier_timeout = tier_timeout_map.get(str(tier or "").strip().upper())
     force_provider_timeout = bool(cfg.get("force_provider_timeout") or cfg.get("timeout_force"))
     if tier_timeout is None:
-        return provider_timeout
+        return max(1, strategy_timeout)
     if force_provider_timeout and cfg.get("timeout_seconds") is not None:
         return provider_timeout
-    return int(tier_timeout)
+    return max(int(tier_timeout), int(strategy_timeout))
 
 
 def _subcall_role_to_provider_role(role: str) -> str:
@@ -656,6 +666,7 @@ def _write_role_subcall_artifact(
     provider_selected: Optional[str],
     model_selected: Optional[str],
     ladder_tried: List[Dict[str, Any]],
+    discarded_providers: List[Dict[str, Any]],
     ok: bool,
     reason_code: str,
     next_hint: List[str],
@@ -683,6 +694,14 @@ def _write_role_subcall_artifact(
         "provider_selected": provider_selected,
         "model_selected": model_selected,
         "fallbacks_tried": fallbacks_tried,
+        "discarded_providers": [
+            {
+                "provider": str(item.get("provider") or ""),
+                "reason_code": str(item.get("reason_code") or ""),
+            }
+            for item in discarded_providers
+            if isinstance(item, dict) and str(item.get("provider") or "").strip()
+        ],
         "result": "ok" if ok else "fail_closed",
         "reason_code": reason_code,
         "next_hint": list(next_hint),
@@ -762,6 +781,12 @@ def run_subcall(
     provider_role = _subcall_role_to_provider_role(role_n)
     rail = env_rail()
     strategy = resolve_role_strategy(root_dir, role_n, rail=rail)
+    strategy_availability = (
+        strategy.get("availability_by_provider") if isinstance(strategy.get("availability_by_provider"), dict) else {}
+    )
+    strategy_discarded = (
+        strategy.get("discarded_providers") if isinstance(strategy.get("discarded_providers"), list) else []
+    )
     mode = str(strategy.get("mode") or "balanced")
     cost_mode = (os.getenv("AJAX_COST_MODE") or "").strip().lower()
     if not cost_mode:
@@ -890,6 +915,18 @@ def run_subcall(
                         "repaired": False,
                         "skipped": True,
                     }
+            strategy_row = strategy_availability.get(provider) if isinstance(strategy_availability, dict) else {}
+            if isinstance(strategy_row, dict):
+                effective_result = str(strategy_row.get("effective_result") or "").strip().lower()
+                reason_code = str(strategy_row.get("reason_code") or "").strip().lower()
+                if effective_result in {"usable", "degraded"} and reason_code not in {
+                    "auth_missing",
+                    "auth_invalid",
+                    "auth_expired",
+                    "cli_not_installed",
+                    "config_missing",
+                }:
+                    return True, None
             return False, None
         return True, None
 
@@ -916,6 +953,7 @@ def run_subcall(
         "rail": rail,
         "mode": mode,
         "strategy": strategy,
+        "discarded_providers": strategy_discarded,
         "cost_mode": cost_mode,
         "provider_chosen": None,
         "ladder_tried": [],
@@ -1010,6 +1048,7 @@ def run_subcall(
                 cfg=cfg,
                 tier=tier_u,
                 tier_timeout_map=tier_timeout_map,
+                strategy_timeout_seconds=int(strategy.get("timeout_seconds") or 0) or None,
             )
 
             system_prompt, user_prompt = _compile_subcall_prompts(role=role_n, tier=tier_u, prompt=prompt, json_mode=json_mode)
@@ -1270,6 +1309,11 @@ def _finalize_subcall(
             provider_selected=provider_chosen,
             model_selected=str(model_selected) if model_selected else None,
             ladder_tried=ladder_tried,
+            discarded_providers=(
+                receipt_payload.get("discarded_providers")
+                if isinstance(receipt_payload.get("discarded_providers"), list)
+                else []
+            ),
             ok=bool(ok),
             reason_code=reason_code,
             next_hint=list(next_hint or []),
