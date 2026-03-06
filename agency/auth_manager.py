@@ -226,71 +226,72 @@ class AuthManager:
 
     def auth_source(self, provider_name: str, provider_cfg: Dict[str, Any]) -> Optional[str]:
         """
-        Best-effort: devuelve la fuente de auth detectada (env|file|wsl_file).
+        Best-effort: devuelve una fuente de auth redacted.
+        Nunca exponer nombres de variables ni rutas concretas.
         """
         kind = str(provider_cfg.get("kind") or "").lower()
         if kind == "http_openai":
             api_key_env = provider_cfg.get("api_key_env")
             if api_key_env and os.getenv(str(api_key_env)):
-                return f"env:{api_key_env}"
+                return "env:<present>"
             return None
         if kind == "codex_cli_jsonl":
             if os.getenv("OPENAI_API_KEY"):
-                return "env:OPENAI_API_KEY"
+                return "env:<present>"
             if os.getenv("CODEX_API_KEY"):
-                return "env:CODEX_API_KEY"
+                return "env:<present>"
             auth_path = Path("~/.codex/auth.json").expanduser()
             if auth_path.exists() and auth_path.stat().st_size > 0:
-                return "file:~/.codex/auth.json"
+                return "file:<redacted>"
             if _wsl_path_exists("~/.codex/auth.json"):
-                return "wsl_file:~/.codex/auth.json"
+                return "file:<redacted>"
             if _wsl_env_has("OPENAI_API_KEY"):
-                return "wsl_env:OPENAI_API_KEY"
+                return "env:<present>"
             if _wsl_env_has("CODEX_API_KEY"):
-                return "wsl_env:CODEX_API_KEY"
+                return "env:<present>"
             return None
         if kind == "cli":
             cmd = provider_cfg.get("command") or []
             tool = str(cmd[0]) if isinstance(cmd, list) and cmd else ""
             if tool == "qwen":
                 if os.getenv("QWEN_OAUTH"):
-                    return "env:QWEN_OAUTH"
+                    return "env:<present>"
                 if os.getenv("OPENAI_API_KEY"):
-                    return "env:OPENAI_API_KEY"
+                    return "env:<present>"
                 oauth_path = Path("~/.qwen/oauth_creds.json").expanduser()
                 if oauth_path.exists() and oauth_path.stat().st_size > 0:
-                    return "file:~/.qwen/oauth_creds.json"
+                    return "file:<redacted>"
                 settings_path = Path("~/.qwen/settings.json").expanduser()
                 if settings_path.exists() and settings_path.stat().st_size > 0:
-                    return "file:~/.qwen/settings.json"
+                    return "config:<redacted>"
                 if _wsl_path_exists("~/.qwen/oauth_creds.json"):
-                    return "wsl_file:~/.qwen/oauth_creds.json"
+                    return "file:<redacted>"
                 if _wsl_path_exists("~/.qwen/settings.json"):
-                    return "wsl_file:~/.qwen/settings.json"
+                    return "config:<redacted>"
                 if _wsl_env_has("QWEN_OAUTH"):
-                    return "wsl_env:QWEN_OAUTH"
+                    return "env:<present>"
                 if _wsl_env_has("OPENAI_API_KEY"):
-                    return "wsl_env:OPENAI_API_KEY"
+                    return "env:<present>"
                 return None
             if tool == "gemini":
                 if os.getenv("GEMINI_API_KEY"):
-                    return "env:GEMINI_API_KEY"
+                    return "env:<present>"
                 if os.getenv("GOOGLE_API_KEY"):
-                    return "env:GOOGLE_API_KEY"
+                    return "env:<present>"
                 oauth_path = Path("~/.gemini/oauth_creds.json").expanduser()
                 if oauth_path.exists() and oauth_path.stat().st_size > 0:
-                    return "file:~/.gemini/oauth_creds.json"
+                    return "file:<redacted>"
                 adc = Path("~/.config/gcloud/application_default_credentials.json").expanduser()
                 if adc.exists() and adc.stat().st_size > 0:
-                    return "file:~/.config/gcloud/application_default_credentials.json"
+                    return "config:<redacted>"
                 if _wsl_path_exists("~/.gemini/oauth_creds.json"):
-                    return "wsl_file:~/.gemini/oauth_creds.json"
+                    return "file:<redacted>"
                 if _wsl_path_exists("~/.config/gcloud/application_default_credentials.json"):
-                    return "wsl_file:~/.config/gcloud/application_default_credentials.json"
+                    return "config:<redacted>"
                 if _wsl_env_has("GEMINI_API_KEY"):
-                    return "wsl_env:GEMINI_API_KEY"
+                    return "env:<present>"
                 if _wsl_env_has("GOOGLE_API_KEY"):
-                    return "wsl_env:GOOGLE_API_KEY"
+                    return "env:<present>"
                 return None
         return None
 
