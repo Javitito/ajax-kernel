@@ -31,6 +31,18 @@ _BLOCKED_REASON_CODES = {
     "config_missing",
     "provider_down",
 }
+_KNOWN_REASON_CODES = {
+    "ok",
+    "auth_missing",
+    "auth_invalid",
+    "auth_expired",
+    "cli_not_installed",
+    "provider_timeout",
+    "provider_down",
+    "quota_exhausted",
+    "config_missing",
+    "unknown_provider_failure",
+}
 
 
 def _utc_now() -> str:
@@ -204,6 +216,69 @@ def _effective_result(*, auth_state: str, reachability_state: str, reason_code: 
     if reachability_state in {"down"}:
         return "blocked"
     return "degraded"
+
+
+def _normalize_reason_code(reason_code: str) -> str:
+    normalized = str(reason_code or "").strip().lower()
+    if not normalized:
+        return "unknown_provider_failure"
+    if normalized in _KNOWN_REASON_CODES:
+        return normalized
+    return _classify_reason_code(normalized)
+
+
+def _summary_status_from_detailed(
+    *,
+    configured: bool,
+    auth_state: str,
+    reachability_state: str,
+    reason_code: str,
+) -> str:
+    """
+    Canonical mapper for quick-summary status.
+    Keeps human summary aligned with detailed JSON fields.
+    """
+    reason = _normalize_reason_code(reason_code)
+    auth = str(auth_state or "").strip().lower()
+    reachability = str(reachability_state or "").strip().lower()
+    if not configured:
+        return "config_missing"
+    if reason == "cli_not_installed":
+        return "cli_not_installed"
+    if auth == "missing":
+        return "auth_missing"
+    if auth == "expired":
+        return "auth_expired"
+    if reason in {
+        "auth_missing",
+        "auth_invalid",
+        "auth_expired",
+        "config_missing",
+        "provider_down",
+        "quota_exhausted",
+    }:
+        return reason
+    if reason == "provider_timeout":
+        return "provider_timeout"
+    if reachability == "timeout":
+        return "provider_timeout"
+    if reason == "ok" and reachability == "down":
+        return "provider_down"
+    if reason in {"ok", "unknown_provider_failure"}:
+        return reason
+    return "unknown_provider_failure"
+
+
+def _summary_status_from_row(row: Dict[str, Any]) -> str:
+    explicit = _normalize_reason_code(str(row.get("summary_status") or ""))
+    if explicit != "unknown_provider_failure" or str(row.get("summary_status") or "").strip():
+        return explicit
+    return _summary_status_from_detailed(
+        configured=bool(row.get("configured")),
+        auth_state=str(row.get("auth_state") or ""),
+        reachability_state=str(row.get("reachability_state") or ""),
+        reason_code=str(row.get("reason_code") or ""),
+    )
 
 
 def _next_hint(provider: str, cfg: Dict[str, Any], reason_code: str) -> str:
@@ -528,6 +603,12 @@ def collect_provider_auth_diagnostics(
             reachability_state=reachability_state,
             reason_code=reason_code,
         )
+        summary_status = _summary_status_from_detailed(
+            configured=configured,
+            auth_state=auth_state,
+            reachability_state=reachability_state,
+            reason_code=reason_code,
+        )
         next_hint = _next_hint(provider, cfg, reason_code)
 
         row: Dict[str, Any] = {
@@ -539,6 +620,7 @@ def collect_provider_auth_diagnostics(
             "quota_state": quota_state,
             "effective_result": result,
             "reason_code": reason_code,
+            "summary_status": summary_status,
             "next_hint": next_hint,
             "auth_source": auth_mgr.auth_source(provider, cfg),
             "snapshot_reason": state.get("snapshot_reason"),
@@ -600,8 +682,9 @@ def format_doctor_auth_summary(payload: Dict[str, Any]) -> str:
     for row in rows:
         if not isinstance(row, dict):
             continue
+        summary_status = _summary_status_from_row(row)
         lines.append(
-            f"{row.get('provider_name')}: auth={row.get('auth_state')} reachability={row.get('reachability_state')} quota={row.get('quota_state')} result={row.get('effective_result')} reason={row.get('reason_code')}"
+            f"{row.get('provider_name')}: auth={row.get('auth_state')} reachability={row.get('reachability_state')} quota={row.get('quota_state')} result={row.get('effective_result')} reason={summary_status}"
         )
     hints = payload.get("next_hint") if isinstance(payload.get("next_hint"), list) else []
     if hints:

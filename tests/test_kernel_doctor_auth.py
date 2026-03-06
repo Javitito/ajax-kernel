@@ -112,6 +112,20 @@ def _provider_row(payload: dict, provider_name: str) -> dict:
     return {}
 
 
+def _summary_reason_for(payload: dict, provider_name: str) -> str:
+    summary = str(payload.get("summary") or "")
+    prefix = f"{provider_name}:"
+    for line in summary.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(prefix):
+            continue
+        marker = " reason="
+        idx = stripped.rfind(marker)
+        if idx >= 0:
+            return stripped[idx + len(marker) :].strip()
+    return ""
+
+
 def test_doctor_auth_registered() -> None:
     proc = subprocess.run(
         [sys.executable, "bin/ajaxctl", "doctor", "auth", "--help"],
@@ -185,6 +199,96 @@ def test_doctor_auth_reports_cli_not_installed(tmp_path: Path) -> None:
     qwen = _provider_row(payload, "qwen_cloud")
     assert qwen.get("reason_code") == "cli_not_installed"
     assert qwen.get("effective_result") == "blocked"
+
+
+def test_doctor_auth_summary_reports_cli_not_installed(tmp_path: Path) -> None:
+    _prepare_root(tmp_path)
+
+    def _probe(provider: str, cfg: dict, timeout_s: float) -> dict:
+        if provider == "qwen_cloud":
+            return {"reason_code": "cli_not_installed", "reachability_state": "down", "quota_state": "unknown", "probe": {}}
+        return {"reason_code": "ok", "reachability_state": "ok", "quota_state": "ok", "probe": {}}
+
+    payload = collect_provider_auth_diagnostics(tmp_path, include_probes=True, write_artifact=False, probe_fn=_probe)
+    assert _summary_reason_for(payload, "qwen_cloud") == "cli_not_installed"
+
+
+def test_doctor_auth_summary_reports_provider_timeout_only_on_timeout(tmp_path: Path, monkeypatch) -> None:
+    _prepare_root(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "present-token")
+
+    def _probe(provider: str, cfg: dict, timeout_s: float) -> dict:
+        if provider == "groq":
+            return {"reason_code": "provider_timeout", "reachability_state": "timeout", "quota_state": "ok", "probe": {}}
+        if provider == "qwen_cloud":
+            return {"reason_code": "cli_not_installed", "reachability_state": "down", "quota_state": "unknown", "probe": {}}
+        return {"reason_code": "ok", "reachability_state": "ok", "quota_state": "ok", "probe": {}}
+
+    payload = collect_provider_auth_diagnostics(tmp_path, include_probes=True, write_artifact=False, probe_fn=_probe)
+    assert _summary_reason_for(payload, "groq") == "provider_timeout"
+    assert _summary_reason_for(payload, "qwen_cloud") == "cli_not_installed"
+
+
+def test_doctor_auth_summary_matches_detailed_json_for_cli_absent(tmp_path: Path) -> None:
+    _prepare_root(tmp_path)
+
+    def _probe(provider: str, cfg: dict, timeout_s: float) -> dict:
+        if provider == "qwen_cloud":
+            return {"reason_code": "cli_not_installed", "reachability_state": "down", "quota_state": "unknown", "probe": {}}
+        return {"reason_code": "ok", "reachability_state": "ok", "quota_state": "ok", "probe": {}}
+
+    payload = collect_provider_auth_diagnostics(tmp_path, include_probes=True, write_artifact=False, probe_fn=_probe)
+    qwen = _provider_row(payload, "qwen_cloud")
+    assert qwen.get("summary_status") == "cli_not_installed"
+    assert _summary_reason_for(payload, "qwen_cloud") == str(qwen.get("summary_status"))
+
+
+def test_doctor_auth_summary_matches_detailed_json_for_timeout(tmp_path: Path, monkeypatch) -> None:
+    _prepare_root(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "present-token")
+
+    def _probe(provider: str, cfg: dict, timeout_s: float) -> dict:
+        if provider == "groq":
+            return {"reason_code": "provider_timeout", "reachability_state": "timeout", "quota_state": "ok", "probe": {}}
+        return {"reason_code": "ok", "reachability_state": "ok", "quota_state": "ok", "probe": {}}
+
+    payload = collect_provider_auth_diagnostics(tmp_path, include_probes=True, write_artifact=False, probe_fn=_probe)
+    groq = _provider_row(payload, "groq")
+    assert groq.get("summary_status") == "provider_timeout"
+    assert _summary_reason_for(payload, "groq") == str(groq.get("summary_status"))
+
+
+def test_doctor_auth_summary_matches_detailed_json_for_auth_missing(tmp_path: Path, monkeypatch) -> None:
+    _prepare_root(tmp_path)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    payload = collect_provider_auth_diagnostics(tmp_path, include_probes=False, write_artifact=False)
+    groq = _provider_row(payload, "groq")
+    assert groq.get("summary_status") == "auth_missing"
+    assert _summary_reason_for(payload, "groq") == str(groq.get("summary_status"))
+
+
+def test_doctor_auth_no_secret_leak_in_summary(tmp_path: Path, monkeypatch) -> None:
+    _prepare_root(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "TOP_SECRET_SUMMARY_123")
+    payload = collect_provider_auth_diagnostics(tmp_path, include_probes=False, write_artifact=False)
+    summary = str(payload.get("summary") or "")
+    assert "TOP_SECRET_SUMMARY_123" not in summary
+
+
+def test_doctor_auth_optional_cli_absence_does_not_mark_other_providers_timeout(tmp_path: Path, monkeypatch) -> None:
+    _prepare_root(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "present-token")
+
+    def _probe(provider: str, cfg: dict, timeout_s: float) -> dict:
+        if provider in {"qwen_cloud", "gemini_cli"}:
+            return {"reason_code": "cli_not_installed", "reachability_state": "down", "quota_state": "unknown", "probe": {}}
+        return {"reason_code": "ok", "reachability_state": "ok", "quota_state": "ok", "probe": {}}
+
+    payload = collect_provider_auth_diagnostics(tmp_path, include_probes=True, write_artifact=False, probe_fn=_probe)
+    assert _summary_reason_for(payload, "groq") == "ok"
+    assert _summary_reason_for(payload, "lmstudio") == "ok"
+    assert _summary_reason_for(payload, "qwen_cloud") == "cli_not_installed"
+    assert _summary_reason_for(payload, "gemini_cli") == "cli_not_installed"
 
 
 def test_strategy_avoids_blocked_provider_for_scout(tmp_path: Path) -> None:
@@ -411,3 +515,9 @@ def test_no_constitution_files_touched_guard() -> None:
     assert constitution_files_touched(["AGENTS.md"]) is True
     assert constitution_files_touched(["PSEUDOCODE_MAP/flow.md"]) is True
     assert constitution_files_touched(["agency/auth_provider_diagnostics.py"]) is False
+
+
+def test_doctor_auth_no_constitution_files_touched_guard() -> None:
+    assert constitution_files_touched(["AGENTS.md"]) is True
+    assert constitution_files_touched(["PSEUDOCODE_MAP/flow.md"]) is True
+    assert constitution_files_touched(["tests/test_kernel_doctor_auth.py"]) is False
