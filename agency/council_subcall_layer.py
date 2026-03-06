@@ -12,6 +12,11 @@ from agency.provider_failure_policy import load_provider_failure_policy, plannin
 from agency.provider_policy import env_rail, load_provider_policy, preferred_providers
 
 try:
+    from agency.auth_provider_diagnostics import collect_provider_auth_diagnostics
+except Exception:  # pragma: no cover
+    collect_provider_auth_diagnostics = None  # type: ignore
+
+try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover
     yaml = None  # type: ignore
@@ -241,6 +246,29 @@ def _fallback_ladder_from_inventory(
     return out
 
 
+def _provider_runtime_map(root_dir: Path) -> Dict[str, Dict[str, Any]]:
+    if collect_provider_auth_diagnostics is None:
+        return {}
+    try:
+        payload = collect_provider_auth_diagnostics(
+            root_dir=Path(root_dir).resolve(),
+            include_probes=False,
+            write_artifact=False,
+        )
+    except Exception:
+        return {}
+    rows = payload.get("providers") if isinstance(payload.get("providers"), list) else []
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        provider = str(row.get("provider_name") or "").strip()
+        if not provider:
+            continue
+        out[provider] = dict(row)
+    return out
+
+
 def resolve_role_strategy(
     root_dir: Path,
     role: str,
@@ -309,6 +337,41 @@ def resolve_role_strategy(
                 ),
             )
 
+    runtime_map = _provider_runtime_map(root)
+    suppressed_providers: List[Dict[str, str]] = []
+    deprioritized_providers: List[Dict[str, str]] = []
+    if filtered and runtime_map:
+        blocked_codes = {"auth_missing", "auth_invalid", "auth_expired", "cli_not_installed", "config_missing"}
+        has_usable = any(
+            str((runtime_map.get(provider) or {}).get("effective_result") or "") == "usable"
+            for provider in filtered
+        )
+        if has_usable:
+            kept: List[str] = []
+            for provider in filtered:
+                row = runtime_map.get(provider) or {}
+                reason_code = str(row.get("reason_code") or "")
+                if reason_code in blocked_codes:
+                    suppressed_providers.append({"provider": provider, "reason_code": reason_code})
+                    continue
+                kept.append(provider)
+            if kept:
+                filtered = kept
+
+        if role_c == "scout" and filtered:
+            healthy: List[str] = []
+            degraded: List[str] = []
+            for provider in filtered:
+                row = runtime_map.get(provider) or {}
+                reason_code = str(row.get("reason_code") or "")
+                if reason_code in {"provider_timeout", "provider_down", "quota_exhausted"}:
+                    degraded.append(provider)
+                    deprioritized_providers.append({"provider": provider, "reason_code": reason_code})
+                    continue
+                healthy.append(provider)
+            if healthy:
+                filtered = healthy + degraded
+
     if role_c == "auditor" and coder_provider and filtered:
         coder_n = str(coder_provider).strip()
         if filtered[0] == coder_n:
@@ -321,6 +384,18 @@ def resolve_role_strategy(
     for provider in filtered:
         cfg = providers_cfg.get(provider, {})
         model_by_provider[provider] = _pick_model_for_provider(cfg, mode)
+
+    availability_by_provider: Dict[str, Dict[str, Any]] = {}
+    for provider in filtered:
+        row = runtime_map.get(provider)
+        if isinstance(row, dict):
+            availability_by_provider[provider] = {
+                "effective_result": row.get("effective_result"),
+                "reason_code": row.get("reason_code"),
+                "reachability_state": row.get("reachability_state"),
+                "auth_state": row.get("auth_state"),
+                "quota_state": row.get("quota_state"),
+            }
 
     preferred_provider = filtered[0] if filtered else None
     preferred_model = model_by_provider.get(preferred_provider) if preferred_provider else None
@@ -337,6 +412,7 @@ def resolve_role_strategy(
         next_hint = [
             f"python bin/ajaxctl doctor providers --roles {provider_role}",
             "python bin/ajaxctl doctor council",
+            "python bin/ajaxctl doctor auth",
             "revisa config/provider_policy.yaml y config/model_providers.yaml",
         ]
 
@@ -352,6 +428,9 @@ def resolve_role_strategy(
         "provider_ladder": filtered,
         "preferred_model": preferred_model,
         "model_by_provider": model_by_provider,
+        "availability_by_provider": availability_by_provider,
+        "suppressed_providers": suppressed_providers,
+        "deprioritized_providers": deprioritized_providers,
         "timeout_seconds": max(1, int(timeout_seconds)),
         "retries": retries,
         "strategy_ok": bool(filtered),
@@ -424,6 +503,23 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
     root = Path(root_dir).resolve()
     strategies = resolve_strategy_map(root)
     providers_cfg = _load_model_providers(root)
+    auth_runtime = (
+        collect_provider_auth_diagnostics(
+            root_dir=root,
+            include_probes=False,
+            write_artifact=False,
+        )
+        if collect_provider_auth_diagnostics is not None
+        else {}
+    )
+    runtime_rows = auth_runtime.get("providers") if isinstance(auth_runtime.get("providers"), list) else []
+    runtime_map: Dict[str, Dict[str, Any]] = {}
+    for row in runtime_rows:
+        if not isinstance(row, dict):
+            continue
+        provider_name = str(row.get("provider_name") or "").strip()
+        if provider_name:
+            runtime_map[provider_name] = dict(row)
 
     providers_in_use: List[str] = []
     for role in COUNCIL_EXEC_ROLES:
@@ -431,6 +527,13 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
         ladder = strategy.get("provider_ladder") if isinstance(strategy.get("provider_ladder"), list) else []
         for provider in ladder:
             provider_s = str(provider)
+            if provider_s and provider_s not in providers_in_use:
+                providers_in_use.append(provider_s)
+        suppressed = strategy.get("suppressed_providers") if isinstance(strategy.get("suppressed_providers"), list) else []
+        for item in suppressed:
+            if not isinstance(item, dict):
+                continue
+            provider_s = str(item.get("provider") or "").strip()
             if provider_s and provider_s not in providers_in_use:
                 providers_in_use.append(provider_s)
 
@@ -446,17 +549,60 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
                     "auth_env": None,
                     "auth_state": "provider_missing_in_config",
                     "config_present": False,
+                    "reachability_state": "unknown",
+                    "quota_state": "unknown",
+                    "effective_result": "blocked",
+                    "reason_code": "config_missing",
+                    "next_hint": "revisa config/model_providers.yaml",
                 }
             )
             continue
-        auth_entries.append(_provider_auth_snapshot(provider, cfg))
+        base_entry = _provider_auth_snapshot(provider, cfg)
+        runtime_row = runtime_map.get(provider) or {}
+        if runtime_row:
+            base_entry.update(
+                {
+                    "auth_state": runtime_row.get("auth_state") or base_entry.get("auth_state"),
+                    "reachability_state": runtime_row.get("reachability_state") or "unknown",
+                    "quota_state": runtime_row.get("quota_state") or "unknown",
+                    "effective_result": runtime_row.get("effective_result") or "degraded",
+                    "reason_code": runtime_row.get("reason_code") or "unknown_provider_failure",
+                    "next_hint": runtime_row.get("next_hint"),
+                }
+            )
+        else:
+            base_entry.update(
+                {
+                    "reachability_state": "unknown",
+                    "quota_state": "unknown",
+                    "effective_result": "degraded",
+                    "reason_code": "unknown_provider_failure",
+                }
+            )
+        auth_entries.append(base_entry)
 
     missing_auth = [
         item["provider"]
         for item in auth_entries
-        if bool(item.get("config_present")) and bool(item.get("auth_required")) and item.get("auth_state") != "present"
+        if bool(item.get("config_present"))
+        and (
+            str(item.get("auth_state") or "").strip().lower() in {"missing", "expired", "auth_missing"}
+            or str(item.get("reason_code") or "").strip() in {"auth_missing", "auth_invalid", "auth_expired"}
+        )
     ]
     missing_strategy = [role for role, strategy in strategies.items() if not bool(strategy.get("strategy_ok"))]
+    blocked_providers = [
+        item.get("provider")
+        for item in auth_entries
+        if str(item.get("effective_result") or "").strip().lower() == "blocked"
+    ]
+    timeout_providers = [
+        item.get("provider")
+        for item in auth_entries
+        if str(item.get("reason_code") or "").strip() == "provider_timeout"
+    ]
+    blocked_providers = [str(item) for item in blocked_providers if str(item)]
+    timeout_providers = [str(item) for item in timeout_providers if str(item)]
 
     last_by_role: Dict[str, Optional[Dict[str, Any]]] = {}
     for role in COUNCIL_EXEC_ROLES:
@@ -467,9 +613,13 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
         for item in auth_entries:
             if item.get("provider") in missing_auth and item.get("auth_env"):
                 next_hint.append(f"set {item['auth_env']}=<token>")
+            elif item.get("provider") in missing_auth and item.get("next_hint"):
+                next_hint.append(str(item.get("next_hint")))
     if missing_strategy:
         next_hint.append("revisa config/provider_policy.yaml (rails.<rail>.roles.<role>.preference)")
         next_hint.append("revisa config/model_providers.yaml (providers.<id>.roles)")
+    if blocked_providers or timeout_providers:
+        next_hint.append("python bin/ajaxctl doctor auth")
     for role in COUNCIL_EXEC_ROLES:
         if not last_by_role.get(role):
             next_hint.append(f'python bin/ajaxctl subcall --role {role} "health check {role}"')
@@ -489,6 +639,12 @@ def run_doctor_council(root_dir: Path) -> Dict[str, Any]:
         "auth_config": {
             "providers": auth_entries,
             "missing_auth_providers": missing_auth,
+            "blocked_providers": blocked_providers,
+            "timeout_providers": timeout_providers,
+        },
+        "auth_runtime": {
+            "schema": auth_runtime.get("schema"),
+            "summary_counts": auth_runtime.get("summary_counts"),
         },
         "last_subcall_by_role": last_by_role,
         "executable": bool(executable),
@@ -514,6 +670,10 @@ def format_doctor_council_summary(payload: Dict[str, Any]) -> str:
     auth_doc = payload.get("auth_config") if isinstance(payload.get("auth_config"), dict) else {}
     missing_auth = auth_doc.get("missing_auth_providers") if isinstance(auth_doc.get("missing_auth_providers"), list) else []
     lines.append(f"missing_auth_providers: {len(missing_auth)}")
+    blocked_providers = auth_doc.get("blocked_providers") if isinstance(auth_doc.get("blocked_providers"), list) else []
+    timeout_providers = auth_doc.get("timeout_providers") if isinstance(auth_doc.get("timeout_providers"), list) else []
+    lines.append(f"blocked_providers: {len(blocked_providers)}")
+    lines.append(f"timeout_providers: {len(timeout_providers)}")
     last_by_role = payload.get("last_subcall_by_role") if isinstance(payload.get("last_subcall_by_role"), dict) else {}
     for role in COUNCIL_EXEC_ROLES:
         latest = last_by_role.get(role) if isinstance(last_by_role.get(role), dict) else {}
@@ -635,4 +795,3 @@ def constitution_files_touched(paths: List[str]) -> bool:
         if raw.startswith("PSEUDOCODE_MAP/"):
             return True
     return False
-

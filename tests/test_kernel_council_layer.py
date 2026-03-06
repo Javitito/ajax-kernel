@@ -173,7 +173,7 @@ def test_subcall_writes_receipt_on_fail_closed(tmp_path: Path) -> None:
     assert receipt.exists()
     payload = _read_json(receipt)
     assert payload.get("ok") is False
-    assert payload.get("reason_code") == "provider_auth_failed"
+    assert payload.get("reason_code") == "auth_invalid"
 
 
 def test_subcall_fail_closed_on_missing_provider_with_hint(tmp_path: Path) -> None:

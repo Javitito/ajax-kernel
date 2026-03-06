@@ -575,43 +575,76 @@ def _default_call_provider(provider: str, cfg: Dict[str, Any], system_prompt: st
 def _reason_code_from_error(error: Optional[str], ladder_tried: List[Dict[str, Any]]) -> str:
     err = str(error or "").strip().lower()
     if err.startswith("no_policy_ladder"):
-        return "no_policy_ladder"
+        return "config_missing"
     if err.startswith("no_provider_available"):
         return "no_provider_available"
-    if "invalid_api_key" in err or "http_401" in err or "auth" in err:
-        return "provider_auth_failed"
+    if "auth_missing" in err or "env_missing" in err:
+        return "auth_missing"
+    if "auth_expired" in err or ("expired" in err and "auth" in err):
+        return "auth_expired"
+    if "invalid_api_key" in err or "http_401" in err or "http_403" in err or "unauthorized" in err:
+        return "auth_invalid"
     if "http_429" in err or "quota" in err or "rate_limit" in err:
-        return "provider_quota_exhausted"
+        return "quota_exhausted"
     if "timeout" in err:
         return "provider_timeout"
+    if "connection refused" in err or "transport_down" in err or "provider_down" in err:
+        return "provider_down"
     if any(str(item.get("reason") or "").strip() == "cooldown_active" for item in ladder_tried):
         return "provider_cooldown_active"
-    if any(str(item.get("error") or "").strip() == "provider_probe_failed" for item in ladder_tried):
-        return "provider_probe_failed"
-    return "subcall_failed"
+    probe_failures = [item for item in ladder_tried if str(item.get("error") or "").strip() == "provider_probe_failed"]
+    if probe_failures:
+        detail = " ".join(
+            [
+                str(item.get("probe_error") or "")
+                + " "
+                + str(item.get("detail") or "")
+                for item in probe_failures
+                if isinstance(item, dict)
+            ]
+        ).lower()
+        if "cli_missing" in detail or "not found" in detail or "command not found" in detail:
+            return "cli_not_installed"
+        if "timeout" in detail:
+            return "provider_timeout"
+        if "auth" in detail or "401" in detail or "403" in detail:
+            return "auth_invalid"
+        return "provider_down"
+    if any(str(item.get("error") or "").strip() == "incompatible_for_subcall" for item in ladder_tried):
+        return "config_missing"
+    return "unknown_provider_failure"
 
 
 def _next_hint_for_reason(*, reason_code: str, role: str, provider_role: str) -> List[str]:
     role_n = canonical_role(role)
     base = [
+        "python bin/ajaxctl doctor auth",
         "python bin/ajaxctl doctor council",
         f'python bin/ajaxctl subcall --role {role_n} "health check"',
     ]
-    if reason_code == "no_policy_ladder":
+    if reason_code in {"config_missing", "no_policy_ladder"}:
         return base + [
             "revisa config/provider_policy.yaml (rails.<rail>.roles.<role>.preference)",
             "revisa config/model_providers.yaml (providers.<id>.roles)",
         ]
     if reason_code == "no_provider_available":
-        return base + [f"python bin/ajaxctl doctor providers --roles {provider_role}"]
-    if reason_code == "provider_auth_failed":
+        return base + [f"python bin/ajaxctl doctor providers --roles {provider_role}", "python bin/ajaxctl doctor auth"]
+    if reason_code in {"auth_missing", "provider_auth_failed"}:
         return base + ["configura auth del provider requerido y reintenta"]
-    if reason_code == "provider_quota_exhausted":
+    if reason_code == "auth_invalid":
+        return base + ["credenciales inválidas: renueva key/sesión y reintenta"]
+    if reason_code == "auth_expired":
+        return base + ["sesión/token expirado: reautentica provider y reintenta"]
+    if reason_code in {"quota_exhausted", "provider_quota_exhausted"}:
         return base + ["usa fallback cheap/local y reintenta en cooldown"]
     if reason_code == "provider_timeout":
         return base + ["verifica disponibilidad de bridge/provider y timeout policy"]
-    if reason_code == "provider_probe_failed":
+    if reason_code == "cli_not_installed":
+        return base + ["instala el CLI faltante y confirma PATH del entorno"]
+    if reason_code in {"provider_probe_failed", "provider_down"}:
         return base + ["python bin/ajaxctl doctor bridge --strict"]
+    if reason_code == "provider_cooldown_active":
+        return base + ["provider en cooldown: espera ventana y reintenta"]
     return base
 
 

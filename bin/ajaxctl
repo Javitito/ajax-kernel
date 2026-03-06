@@ -81,6 +81,10 @@ except Exception:
     run_council_demo = None  # type: ignore
     run_doctor_council = None  # type: ignore
 try:
+    from agency.auth_provider_diagnostics import run_doctor_auth
+except Exception:
+    run_doctor_auth = None  # type: ignore
+try:
     from agency.vision_gate import set_local_vision_allowed_for_process
 except Exception:
     set_local_vision_allowed_for_process = None  # type: ignore
@@ -7258,6 +7262,23 @@ def cmd_doctor_vision(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor_auth(args: argparse.Namespace) -> int:
+    if run_doctor_auth is None:
+        print("doctor_auth_unavailable", file=sys.stderr)
+        return 3
+    timeout_s = float(getattr(args, "timeout", 2.0) or 2.0)
+    payload = run_doctor_auth(root_dir=ROOT, probe_timeout_s=timeout_s)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            print(summary)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    counts = payload.get("summary_counts") if isinstance(payload.get("summary_counts"), dict) else {}
+    blocked = int(counts.get("blocked") or 0)
+    return 0 if blocked == 0 else 1
+
 def cmd_doctor_council(args: argparse.Namespace) -> int:
     if run_doctor_council is None:
         print("doctor_council_unavailable", file=sys.stderr)
@@ -8496,6 +8517,18 @@ def main(argv=None) -> int:
     )
     p_doctor_vision.add_argument("--json", action="store_true", help="Solo JSON.")
     p_doctor_vision.set_defaults(func=cmd_doctor_vision)
+    p_doctor_auth = doctor_sub.add_parser(
+        "auth",
+        help="Diagnóstico real de auth/reachability/quota por provider del concilio.",
+    )
+    p_doctor_auth.add_argument("--json", action="store_true", help="Solo JSON.")
+    p_doctor_auth.add_argument(
+        "--timeout",
+        type=float,
+        default=2.0,
+        help="Timeout por probe de provider (segundos).",
+    )
+    p_doctor_auth.set_defaults(func=cmd_doctor_auth)
     p_doctor_council = doctor_sub.add_parser(
         "council",
         help="Diagnóstico del concilio ejecutable (roles, strategy, auth/config, últimos subcalls).",
