@@ -6,6 +6,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import agency.council_subcall_layer as council_layer
 from agency.auth_provider_diagnostics import collect_provider_auth_diagnostics
 from agency.council_subcall_layer import constitution_files_touched, resolve_role_strategy, run_doctor_council
 from agency.subcall import ProviderCallResult, run_subcall
@@ -491,7 +492,7 @@ def test_doctor_auth_does_not_print_secrets(tmp_path: Path, monkeypatch) -> None
     assert "TOP_SECRET_456" not in summary
 
 
-def test_doctor_council_integration_with_auth_status(tmp_path: Path) -> None:
+def test_doctor_council_integration_with_auth_status(tmp_path: Path, monkeypatch) -> None:
     _prepare_root(tmp_path)
     _write_providers_status(
         tmp_path,
@@ -501,12 +502,54 @@ def test_doctor_council_integration_with_auth_status(tmp_path: Path) -> None:
             "groq": {"transport": {"status": "DOWN", "reason": "env_missing:GROQ_API_KEY"}},
         },
     )
+
+    def _fake_auth_snapshot(*_args, **_kwargs) -> dict:
+        return {
+            "providers": [
+                {
+                    "provider_name": "qwen_cloud",
+                    "auth_state": "missing",
+                    "reachability_state": "down",
+                    "quota_state": "unknown",
+                    "effective_result": "blocked",
+                    "reason_code": "auth_missing",
+                    "next_hint": "set QWEN_OAUTH",
+                },
+                {
+                    "provider_name": "lmstudio",
+                    "auth_state": "present",
+                    "reachability_state": "ok",
+                    "quota_state": "ok",
+                    "effective_result": "usable",
+                    "reason_code": "ok",
+                    "next_hint": "python bin/ajaxctl doctor council",
+                },
+                {
+                    "provider_name": "groq",
+                    "auth_state": "present",
+                    "reachability_state": "timeout",
+                    "quota_state": "ok",
+                    "effective_result": "degraded",
+                    "reason_code": "provider_timeout",
+                    "next_hint": "python bin/ajaxctl doctor auth",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        council_layer,
+        "collect_provider_auth_diagnostics",
+        _fake_auth_snapshot,
+        raising=True,
+    )
+
     payload = run_doctor_council(tmp_path)
     auth_doc = payload.get("auth_config") if isinstance(payload.get("auth_config"), dict) else {}
     blocked = auth_doc.get("blocked_providers") if isinstance(auth_doc.get("blocked_providers"), list) else []
     hints = payload.get("next_hint") if isinstance(payload.get("next_hint"), list) else []
     scout = payload.get("strategies", {}).get("scout", {})
     assert "qwen_cloud" in blocked
+    assert "groq" not in blocked
     assert any("doctor auth" in str(hint) for hint in hints)
     assert scout.get("preferred_provider") == "lmstudio"
 

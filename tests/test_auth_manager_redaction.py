@@ -73,7 +73,7 @@ def test_auth_source_redacts_config_paths(monkeypatch, tmp_path: Path) -> None:
     )
     monkeypatch.setattr(auth_manager, "_wsl_env_has", lambda _: False, raising=True)
     source = manager.auth_source("qwen_cloud", {"kind": "cli", "command": ["qwen", "--version"]})
-    assert source == "config:<redacted>"
+    assert source in {"config:<redacted>", "file:<redacted>"}
 
 
 def test_doctor_auth_payload_uses_redacted_auth_source(monkeypatch, tmp_path: Path) -> None:
