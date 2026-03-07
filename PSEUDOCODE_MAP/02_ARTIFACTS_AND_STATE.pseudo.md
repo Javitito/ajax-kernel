@@ -1,88 +1,121 @@
-# 02 - Artifacts and State (As Implemented)
+# 02 - Artifacts and State (Code-First, Live)
 
 ## Scope
-Mapa descriptivo de paths y contratos observables usados por el loop operativo actual.
+Observable files, receipts, and state slices used by the current runtime.
+Only paths verified in code, tests, help output, or kernel runbooks are included.
 
-## As Implemented (main)
-
-### Core runtime artifacts
+## Main Layout
 
 ```text
 artifacts/
   capability_gaps/
-    *.json                      # incluye missing_efe_final + candidate metadata cuando aplica
-  efe_candidates/
-    *.json                      # candidates autogen (schema ajax.verify.efe_candidate.v0)
-  receipts/
-    friction_gc_v1_<UTC>.json
-    efe_autogen_<UTC>.json
-    router_ladder_decision_<UTC>.json
-    lab_session_init_<UTC>.json
-    lab_session_status_<UTC>.json
-    lab_session_revoke_<UTC>.json
-    lab_autopilot_tick_<UTC>.json
-    lab_autopilot_daemon_<UTC>.json
-  waiting_for_user/
     *.json
-    _archived/<YYYY-MM-DD>/*.json  # creado por friction gc --apply
-  provider_ledger/
-    latest.json
-    _snapshots/latest_<UTC>.json   # creado por friction gc --apply
+    open/
+    cancelled/
+  efe_candidates/
+    *.json
+  health/
+    ajax_heartbeat.json
+    providers_status.json
+  history/
+    mission-<id>.json
   lab/
     session/expected_session.json
-    STOP_AUTOPILOT
-  health/
-    autopilot_heartbeat.json
+  provider_ledger/
+    latest.json
+    _snapshots/latest_<utc>.json
+  receipts/
+    exec_<ts>.json
+    subcall_<ts>.json
+    friction_gc_v1_<ts>.json
+    lab_session_init_<ts>.json
+    lab_session_status_<ts>.json
+    lab_session_revoke_<ts>.json
+    lab_autopilot_tick_<ts>.json
+    lab_autopilot_daemon_<ts>.json
+    anti_optimism_degraded_<ts>.json
+    ...
+  subcalls/
+    subcall_<ts>.json
+    subcall_<ts>.txt
+  waiting_for_user/
+    <mission_id>.json
+    _archived/<yyyy-mm-dd>/*.json
   state/
-    fallback_local_model.json      # opcional; existe solo tras lmstudio-bench --select-best
+    waiting_mission.json
+    fallback_local_model.json
 ```
 
-### EFE candidate and apply-candidate contracts
+## Capability and EFE Artifacts
 
-- Candidate schema: `ajax.verify.efe_candidate.v0` (`agency/verify/efe_autogen.py`).
-- Apply output schema: `ajax.verify.efe_apply_candidate.v0` (`agency/verify/efe_apply_candidate.py`).
-- GAP `missing_efe_final` puede incluir:
-  - `efe_candidate_path`
-  - `efe_candidate_status` (`generated|unsupported|error`)
-  - `efe_candidate_reason`
+- `artifacts/capability_gaps/*.json` is the durable fail-closed bucket for execution blockers and degraded outcomes.
+- `artifacts/efe_candidates/*.json` stores deterministic candidate EFEs generated from gaps or plan evidence.
+- `doctor metabolism` reads both directories to summarize loop debt and next actions.
 
-### Receipts validation scope
+## Mission and Waiting State
 
-- Schemas disponibles en `schemas/receipts/`:
-  - `ajax.lab.session.v0.schema.json`
-  - `ajax.lab.autopilot_tick.v1.schema.json`
-  - `ajax.topology_doctor.v0.schema.json`
-- Mapeo de alias soportados en `agency/receipt_validator.py` (por ejemplo `ajax.topology_doctor.v1` -> schema v0).
-- Si el schema no esta soportado, `doctor receipts` lo marca como fallo en `main` actual.
+- `artifacts/history/mission-<id>.json` stores structured mission history for inspector/crystallization flows.
+- `state_dir/waiting_mission.json` stores the resumable mission payload; shipped LAB tooling reads this as `artifacts/state/waiting_mission.json`.
+- `artifacts/waiting_for_user/<mission_id>.json` stores the operator-facing pending payload for the same mission.
+- `ops friction gc --apply` archives old `waiting_for_user` payloads into `_archived/<date>/`.
 
-### Provider ladder and local fallback state
+## Health and Provider State
 
-- Ladder runtime:
-  - cloud-first
-  - si error transitorio/quota/timeout/provider_lock => puede pedir local fallback
-  - si no hay local provider: `reason=local_fallback_unavailable`
-  - si local tambien falla: `reason=local_fallback_failed`
-- Archivo opcional de modelo local preferido:
-  - write: `lmstudio-bench --select-best`
-  - read: `lmstudio-test`
-  - path: `artifacts/state/fallback_local_model.json`
+- `artifacts/health/ajax_heartbeat.json` is the lightweight system heartbeat.
+- `artifacts/health/providers_status.json` is the live provider health snapshot used by routing, diagnostics, Starting XI, and LAB autopilot.
+- `artifacts/provider_ledger/latest.json` is the durable provider availability / cooldown ledger.
+- `artifacts/provider_ledger/_snapshots/latest_<utc>.json` is created when friction GC applies a minimum-budget reset.
 
-### DSE note: subprocess encapsulation
+## Receipts and Validation
 
-- `agency/system_executor.py` centraliza `run/popen/check_output`.
-- `agency/ajax_core.py` usa `SystemExecutor` (sin `subprocess.run`/`subprocess.Popen` directos).
-- Guard test: `tests/test_kernel_system_executor.py::test_ajax_core_does_not_use_subprocess_directly`.
+### Exec and subcall receipts
 
-## Notes / Planned
-- Politica de severidades `PASS/WARN/FAIL` en `doctor receipts` (legacy como WARN por defecto) no esta en `main` actual; queda como planned.
+- `exec_<ts>.json` is written by `_record_exec_receipt()` with schema `ajax.exec_receipt.v1`.
+- `subcall_<ts>.json` is written by `run_subcall()` with schema `ajax.subcall_receipt.v1`.
+- `artifacts/subcalls/subcall_<ts>.json|txt` stores the role output payload sidecar for the same subcall.
 
-## Implemented vs Planned
+### Receipt validator contract
 
-| Item | Status | Evidence pointers |
-|---|---|---|
-| `artifacts/efe_candidates/` y metadata en GAP | Implemented | `agency/ajax_core.py`, `agency/verify/efe_autogen.py` |
-| `verify efe apply-candidate` genera payload final editable | Implemented | `agency/verify/efe_apply_candidate.py` |
-| `waiting_for_user/_archived/<date>/` por friction gc apply | Implemented | `agency/friction.py`, `tests/test_kernel_friction_gc_v1.py` |
-| `fallback_local_model.json` como estado opcional local-first | Implemented (optional artifact) | `agency/lmstudio_bench.py` |
-| `SystemExecutor` y prohibicion de subprocess directo en `ajax_core` | Implemented | `agency/system_executor.py`, `tests/test_kernel_system_executor.py` |
-| `doctor receipts` con WARN/strict/top-k/summary-only | Planned next PR | `agency/receipt_validator.py`, parser actual en `bin/ajaxctl` |
+```text
+doctor_receipts(root_dir, since_min, strict, top_k, summary_only):
+  scan artifacts/receipts/*.json
+  validate supported schemas
+  severity = PASS | WARN | FAIL
+  if strict and severity == WARN:
+    exit as FAIL
+```
+
+- Supported schema mappings in current code:
+  - `ajax.lab.session.init.v0`
+  - `ajax.lab.session.status.v0`
+  - `ajax.lab.session.revoke.v0`
+  - `ajax.lab.session_status.v0`
+    -> `ajax.lab.session.v0.schema.json`
+  - `ajax.lab.session.migrated.v1`
+    -> `ajax.lab.session.migrated.v1.schema.json`
+  - `ajax.lab.autopilot_tick.v1`
+  - `ajax.lab.autopilot_tick.v0`
+    -> `ajax.lab.autopilot_tick.v1.schema.json`
+  - `ajax.topology_doctor.v0`
+  - `ajax.topology_doctor.v1`
+    -> `ajax.topology_doctor.v0.schema.json`
+- WARN currently covers unsupported or missing schema metadata.
+- FAIL covers IO, JSON parse, or schema validation failure.
+
+## LAB and Local Fallback State
+
+- `artifacts/lab/session/expected_session.json` is the canonical LAB session anchor.
+- `artifacts/state/fallback_local_model.json` is optional local fallback state written by `lmstudio-bench --select-best` and read by `lmstudio-test`.
+- LAB autopilot receipts and queue controls operate against the same artifact root and provider status snapshot.
+
+## Evidence Pointers
+
+| Artifact family | Evidence pointers |
+| --- | --- |
+| Capability gaps + EFE candidates | `agency/ajax_core.py`, `agency/metabolism_doctor.py`, `docs/RUNBOOK_LOOP_CLOSURE_E2E.md` |
+| Waiting state | `agency/ajax_core.py`, `agency/lab_control.py`, `agency/friction.py` |
+| History + heartbeat | `agency/history.py`, `agency/ajax_heartbeat.py` |
+| Provider status + ledger | `agency/provider_breathing.py`, `agency/provider_ledger.py`, `agency/starting_xi.py` |
+| Receipt validation | `agency/receipt_validator.py`, `tests/test_receipts_schema_validator.py`, `bin/ajaxctl doctor receipts --help` |
+| Local fallback | `agency/lmstudio_bench.py` |
+
