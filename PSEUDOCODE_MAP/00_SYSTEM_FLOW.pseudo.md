@@ -128,6 +128,11 @@ if plan or runtime needs human clarification:
   - `driver_simulated`
 - `enforce_evidence_tiers()` promotes trust only for `verification_mode=real` with a live, non-simulated driver.
 - `anti_optimism_guard` validates `OutputBundle` claims and degrades unsupported claims to hypothesis plus verification commands.
+- `OutputBundle` has only two live exportable forms:
+  - `claims[]` where each claim passes minimum evidence checks.
+  - `hypothesis + 1..3 verification_commands` when proof is incomplete.
+- In `rail=prod`, `anti_optimism_guard` returns `SOFT_BLOCK` and writes `anti_optimism_degraded_<ts>.json`.
+- In `rail=lab`, the same guard degrades unsupported claims to hypothesis instead of allowing an unproved success report.
 
 ## Evidence Pointers
 
@@ -139,4 +144,3 @@ if plan or runtime needs human clarification:
 | Apply-candidate helper | `agency/verify/efe_apply_candidate.py`, `docs/RUNBOOK_LOOP_CLOSURE_E2E.md` |
 | SSC / rail / evidence tiers | `agency/microfilm_guard.py`, `tests/test_microfilm_guard_unit.py`, `tests/test_kernel_anchor_guard.py` |
 | WAITING_FOR_USER persistence | `agency/ajax_core.py`, `tests/test_kernel_ask_user_path.py`, `tests/test_deference_waiting.py` |
-

@@ -16,6 +16,18 @@ Only commands verified in current help output or code are listed here.
 | `python bin/ajaxctl council demo` | Minimal scout -> coder -> auditor -> judge flow without touching code. |
 | `python bin/ajaxctl verify efe apply-candidate --gap <gap.json> --out <efe_final.json>` | Read-only helper that materializes editable EFE from a gap candidate. |
 | `python bin/ajaxctl ops friction gc --dry-run|--apply [--older-than-hours N]` | Safe hygiene for `waiting_for_user` backlog and provider ledger minimum-budget reset. |
+| `python bin/ajaxctl crystallize mission <mission_id>` | Materializes one episode and one candidate recipe from a recorded mission attempt. |
+| `python bin/ajaxctl crystallize auto {on,off}` | Toggles post-mission auto-crystallize via a persisted flag. |
+| `python bin/ajaxctl validate recipe <recipe> [--runs N --source episodes]` | Validates a candidate recipe against observed episode evidence only. |
+| `python bin/ajaxctl validate receipt <file-or-glob>` | Schema validation for one or more receipts outside the doctor summary. |
+| `python bin/ajaxctl promote recipe <recipe>` / `promote eligible ...` | Promotes only previously validated eligible recipes into habits. |
+| `python bin/ajaxctl inspect [--last N] [--drivers]` | Summarizes recent mission history and optional driver failure context. |
+| `python bin/ajaxctl gaps triage [--top N --rail lab]` | LAB-only ranking of open capability gaps with suggested probes. |
+| `python bin/ajaxctl research <topic> [--context text]` | Runs Scout and emits a research report path under the artifact sandbox. |
+| `python bin/ajaxctl cloud-canary --provider <id> [--model <id>] [--json]` | Deterministic cloud provider canary with receipt output. |
+| `python bin/ajaxctl cloud-bench [--suite crawl_v1 --providers ... --runs N --budget label]` | Multi-provider cloud benchmark surface. |
+| `python bin/ajaxctl lmstudio-bench [--suite crawl_v1 --models ... --runs N --select-best --json]` | Local benchmark surface that can update fallback local model state. |
+| `python bin/ajaxctl lmstudio-test [--json]` | Local canary that reads `fallback_local_model.json`. |
 | `python bin/ajaxctl lab ensure --rail {lab,prod}` | Idempotent LAB rail start/recovery with verify fail-closed. |
 | `python bin/ajaxctl lab start|stop|restart|status` | Direct LAB worker lifecycle controls. |
 | `python bin/ajaxctl lab session {init,status,revoke}` | File-based expected session anchor for LAB. |
@@ -69,6 +81,23 @@ python bin/ajaxctl doctor metabolism --since-min <minutes>
 - `doctor auth` and `doctor council` are the primary operator entrypoints when subcalls degrade because of auth, quota, bridge, or timeout problems.
 - `providers status` is the explicit health snapshot surface; `providers ping` is the explicit latency surface.
 
+## Knowledge Lift and Research Surface
+
+- `crystallize mission` lifts one recorded mission into `episode + candidate recipe` artifacts.
+- `crystallize auto on|off` controls whether the runtime attempts this lift automatically after a mission.
+- `validate recipe` only uses observed episode evidence; replay validation is still rejected by current code.
+- `promote recipe` and `promote eligible` require a prior eligible validation before writing habits.
+- `inspect` is the compact read-only entrypoint for recent mission history.
+- `gaps triage` is LAB-only and writes ranked probes for open capability gaps.
+- `research` is the live operator entrypoint for Scout reports; external-search heuristics stay outside canonical pseudocode.
+
+## Benchmark and Canary Surface
+
+- `cloud-canary` is the explicit cloud reachability / parse / validation check with a receipt.
+- `cloud-bench` is the explicit multi-provider benchmark surface.
+- `lmstudio-bench` writes benchmark results and can update local fallback model state.
+- `lmstudio-test` is the matching local canary that consumes `fallback_local_model.json`.
+
 ## LAB Control Surface
 
 - `lab ensure` is the safest entrypoint for starting or recovering the LAB rail.
@@ -86,5 +115,7 @@ python bin/ajaxctl doctor metabolism --since-min <minutes>
 | Subcall / council demo | `bin/ajaxctl subcall --help`, `bin/ajaxctl council --help`, `agency/subcall.py`, `agency/council_subcall_layer.py` |
 | EFE helper | `bin/ajaxctl verify efe apply-candidate --help`, `agency/verify/efe_apply_candidate.py` |
 | Friction GC | `bin/ajaxctl ops friction gc --help`, `agency/friction.py`, `tests/test_kernel_friction_gc_v1.py` |
+| Recipe lifecycle | `bin/ajaxctl crystallize --help`, `bin/ajaxctl validate --help`, `bin/ajaxctl promote --help`, `agency/crystallization.py`, `agency/ajax_core.py` |
+| Gaps / research | `bin/ajaxctl gaps --help`, `bin/ajaxctl research --help`, `agency/gaps_triage.py`, `agency/scout.py` |
+| Bench / canary | `bin/ajaxctl cloud-canary --help`, `bin/ajaxctl cloud-bench --help`, `bin/ajaxctl lmstudio-bench --help`, `agency/cloud_bench.py`, `agency/lmstudio_bench.py` |
 | LAB controls | `bin/ajaxctl lab --help`, `bin/ajaxctl lab session --help`, `agency/lab_session_anchor.py`, `agency/lab_autopilot.py` |
-

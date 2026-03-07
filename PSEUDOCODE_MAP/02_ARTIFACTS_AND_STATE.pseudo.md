@@ -8,23 +8,39 @@ Only paths verified in code, tests, help output, or kernel runbooks are included
 
 ```text
 artifacts/
+  benchmarks/
+    cloud/
+    lmstudio/
   capability_gaps/
     *.json
     open/
     cancelled/
+  episodes/
+    episode_<ts>_<mission_id>.json
   efe_candidates/
     *.json
+  gaps/
+    triage_<stamp>.json
+    triage_<stamp>.md
   health/
     ajax_heartbeat.json
     providers_status.json
+  habits/
+    habit_<intent_class>_v<n>.json
   history/
     mission-<id>.json
+  indexes/
+    crystallization_index.json
   lab/
     session/expected_session.json
   provider_ledger/
     latest.json
     _snapshots/latest_<utc>.json
+  recipes/
+    candidates/recipe_<ts>_<intent_class>_<slug>.json
+    validated/validation_<ts>_<recipe>.json
   receipts/
+    cloud_canary_<ts>.json
     exec_<ts>.json
     subcall_<ts>.json
     friction_gc_v1_<ts>.json
@@ -35,6 +51,8 @@ artifacts/
     lab_autopilot_daemon_<ts>.json
     anti_optimism_degraded_<ts>.json
     ...
+  scout_sandbox/
+    research/<yyyy-mm-dd>_<topic-slug>/report.md
   subcalls/
     subcall_<ts>.json
     subcall_<ts>.txt
@@ -42,6 +60,7 @@ artifacts/
     <mission_id>.json
     _archived/<yyyy-mm-dd>/*.json
   state/
+    auto_crystallize.flag
     waiting_mission.json
     fallback_local_model.json
 ```
@@ -59,6 +78,15 @@ artifacts/
 - `artifacts/waiting_for_user/<mission_id>.json` stores the operator-facing pending payload for the same mission.
 - `ops friction gc --apply` archives old `waiting_for_user` payloads into `_archived/<date>/`.
 
+## Knowledge-Lift Artifacts
+
+- `artifacts/episodes/episode_<ts>_<mission_id>.json` stores the lifted mission narrative used by recipe validation.
+- `artifacts/recipes/candidates/recipe_*.json` stores candidate recipes generated from crystallized missions.
+- `artifacts/recipes/validated/validation_<ts>_<recipe>.json` stores eligibility reports produced by `validate recipe`.
+- `artifacts/habits/habit_<intent_class>_v<n>.json` stores promoted habits only after eligible validation.
+- `artifacts/indexes/crystallization_index.json` is the durable episode/recipe/habit index for this pipeline.
+- `artifacts/state/auto_crystallize.flag` is the persisted switch behind `crystallize auto on|off`.
+
 ## Health and Provider State
 
 - `artifacts/health/ajax_heartbeat.json` is the lightweight system heartbeat.
@@ -72,6 +100,7 @@ artifacts/
 
 - `exec_<ts>.json` is written by `_record_exec_receipt()` with schema `ajax.exec_receipt.v1`.
 - `subcall_<ts>.json` is written by `run_subcall()` with schema `ajax.subcall_receipt.v1`.
+- `cloud_canary_<ts>.json` is written by `cloud-canary` with schema `ajax.cloud_canary.v1`.
 - `artifacts/subcalls/subcall_<ts>.json|txt` stores the role output payload sidecar for the same subcall.
 
 ### Receipt validator contract
@@ -102,9 +131,17 @@ doctor_receipts(root_dir, since_min, strict, top_k, summary_only):
 - WARN currently covers unsupported or missing schema metadata.
 - FAIL covers IO, JSON parse, or schema validation failure.
 
-## LAB and Local Fallback State
+## Gap Triage and Research Artifacts
+
+- `artifacts/gaps/triage_<stamp>.json|md` is written by `gaps triage` from `artifacts/capability_gaps/open` plus `experiments/runs/*/epistemic_feedback.json`.
+- `artifacts/scout_sandbox/research/<date>_<topic-slug>/report.md` is the stable research report output returned by `ajaxctl research`.
+- External backlog management in `LEANN_CAP_GAPS/research_backlog.yaml` stays outside kernel pseudocode canon.
+
+## LAB, Benchmark, and Local Fallback State
 
 - `artifacts/lab/session/expected_session.json` is the canonical LAB session anchor.
+- `artifacts/benchmarks/cloud/` stores cloud benchmark outputs.
+- `artifacts/benchmarks/lmstudio/<ts>_bench.{json,md}` plus `LMSTUDIO_BENCH_LATEST.json` store local benchmark outputs.
 - `artifacts/state/fallback_local_model.json` is optional local fallback state written by `lmstudio-bench --select-best` and read by `lmstudio-test`.
 - LAB autopilot receipts and queue controls operate against the same artifact root and provider status snapshot.
 
@@ -117,5 +154,7 @@ doctor_receipts(root_dir, since_min, strict, top_k, summary_only):
 | History + heartbeat | `agency/history.py`, `agency/ajax_heartbeat.py` |
 | Provider status + ledger | `agency/provider_breathing.py`, `agency/provider_ledger.py`, `agency/starting_xi.py` |
 | Receipt validation | `agency/receipt_validator.py`, `tests/test_receipts_schema_validator.py`, `bin/ajaxctl doctor receipts --help` |
+| Knowledge-lift pipeline | `agency/crystallization.py`, `agency/ajax_core.py`, `bin/ajaxctl crystallize --help`, `bin/ajaxctl promote --help` |
+| Gaps / research | `agency/gaps_triage.py`, `agency/scout.py`, `bin/ajaxctl gaps --help`, `bin/ajaxctl research --help` |
+| Bench / canary | `agency/cloud_bench.py`, `agency/lmstudio_bench.py`, `bin/ajaxctl cloud-canary --help`, `bin/ajaxctl lmstudio-bench --help` |
 | Local fallback | `agency/lmstudio_bench.py` |
-
