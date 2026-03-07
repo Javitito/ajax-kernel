@@ -59,6 +59,32 @@ except Exception:
     tag_screen_with_delta = None  # type: ignore
     run_vision_doctor = None  # type: ignore
 try:
+    from agency.council_subcall_layer import (
+        CLI_SUBCALL_ROLES,
+        resolve_role_strategy as resolve_subcall_role_strategy,
+        run_council_demo,
+        run_doctor_council,
+    )
+except Exception:
+    CLI_SUBCALL_ROLES = (
+        "planner",
+        "scout",
+        "coder",
+        "auditor",
+        "judge",
+        "reviewer",
+        "summarizer",
+        "validator",
+        "survivor",
+    )
+    resolve_subcall_role_strategy = None  # type: ignore
+    run_council_demo = None  # type: ignore
+    run_doctor_council = None  # type: ignore
+try:
+    from agency.auth_provider_diagnostics import run_doctor_auth
+except Exception:
+    run_doctor_auth = None  # type: ignore
+try:
     from agency.vision_gate import set_local_vision_allowed_for_process
 except Exception:
     set_local_vision_allowed_for_process = None  # type: ignore
@@ -821,19 +847,27 @@ def cmd_subcall(args: argparse.Namespace) -> int:
         # Local survival path: defaults become explicit unless caller overrides.
         if not role:
             role = "survivor"
-        if not tier:
-            tier = "T1"
         if not os.getenv("AJAX_COST_MODE"):
             os.environ["AJAX_COST_MODE"] = "save_codex"
 
     if not role:
         print(
-            "missing_role: use --role {scout,reviewer,summarizer,validator,survivor} or --local '<prompt>'",
+            "missing_role: use --role {planner,scout,coder,auditor,judge} or --local '<prompt>'",
             file=sys.stderr,
         )
         return 2
     if not tier:
-        print("missing_tier: use --tier {T0,T1,T2} or --local '<prompt>'", file=sys.stderr)
+        if resolve_subcall_role_strategy is not None:
+            try:
+                tier = str(
+                    (resolve_subcall_role_strategy(ROOT, role) or {}).get("default_tier") or "T1"
+                ).strip().upper()
+            except Exception:
+                tier = "T1"
+        else:
+            tier = "T1"
+    if tier not in {"T0", "T1", "T2"}:
+        print("invalid_tier: use --tier {T0,T1,T2}", file=sys.stderr)
         return 2
 
     try:
@@ -856,8 +890,12 @@ def cmd_subcall(args: argparse.Namespace) -> int:
     if result.output_text:
         sys.stdout.write(result.output_text)
     if not result.ok:
-        msg = result.error or result.terminal or "subcall_failed"
+        msg = result.error or result.reason_code or result.terminal or "subcall_failed"
         print(msg, file=sys.stderr)
+        hints = getattr(result, "next_hint", None)
+        if isinstance(hints, list):
+            for hint in hints[:3]:
+                print(f"next_hint: {hint}", file=sys.stderr)
     return 0 if result.ok else 2
 
 
@@ -7224,6 +7262,47 @@ def cmd_doctor_vision(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor_auth(args: argparse.Namespace) -> int:
+    if run_doctor_auth is None:
+        print("doctor_auth_unavailable", file=sys.stderr)
+        return 3
+    timeout_s = float(getattr(args, "timeout", 2.0) or 2.0)
+    payload = run_doctor_auth(root_dir=ROOT, probe_timeout_s=timeout_s)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            print(summary)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    counts = payload.get("summary_counts") if isinstance(payload.get("summary_counts"), dict) else {}
+    blocked = int(counts.get("blocked") or 0)
+    return 0 if blocked == 0 else 1
+
+def cmd_doctor_council(args: argparse.Namespace) -> int:
+    if run_doctor_council is None:
+        print("doctor_council_unavailable", file=sys.stderr)
+        return 3
+    payload = run_doctor_council(root_dir=ROOT)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            print(summary)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("executable")) else 1
+
+
+def cmd_council_demo(args: argparse.Namespace) -> int:
+    if run_council_demo is None:
+        print("council_demo_unavailable", file=sys.stderr)
+        return 3
+    prompt = " ".join(getattr(args, "prompt", []) or []).strip()
+    payload = run_council_demo(root_dir=ROOT, prompt=prompt or None)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
 def cmd_retry_fresh(args: argparse.Namespace) -> int:
     mission_id = str(args.mission_id or "").strip()
     if not mission_id:
@@ -7765,7 +7844,7 @@ def main(argv=None) -> int:
         "subcall", help="DEV_DELEGATION: subcall (policy+ledger) para roles T0–T2."
     )
     p_subcall.add_argument(
-        "--role", choices=["scout", "reviewer", "summarizer", "validator", "survivor"]
+        "--role", choices=list(CLI_SUBCALL_ROLES)
     )
     p_subcall.add_argument("--tier", choices=["T0", "T1", "T2"])
     p_subcall.add_argument(
@@ -8438,6 +8517,24 @@ def main(argv=None) -> int:
     )
     p_doctor_vision.add_argument("--json", action="store_true", help="Solo JSON.")
     p_doctor_vision.set_defaults(func=cmd_doctor_vision)
+    p_doctor_auth = doctor_sub.add_parser(
+        "auth",
+        help="Diagnóstico real de auth/reachability/quota por provider del concilio.",
+    )
+    p_doctor_auth.add_argument("--json", action="store_true", help="Solo JSON.")
+    p_doctor_auth.add_argument(
+        "--timeout",
+        type=float,
+        default=2.0,
+        help="Timeout por probe de provider (segundos).",
+    )
+    p_doctor_auth.set_defaults(func=cmd_doctor_auth)
+    p_doctor_council = doctor_sub.add_parser(
+        "council",
+        help="Diagnóstico del concilio ejecutable (roles, strategy, auth/config, últimos subcalls).",
+    )
+    p_doctor_council.add_argument("--json", action="store_true", help="Solo JSON.")
+    p_doctor_council.set_defaults(func=cmd_doctor_council)
     p_doctor_providers = doctor_sub.add_parser(
         "providers", help="Self-test rápido de proveedores Brain."
     )
@@ -8664,6 +8761,19 @@ def main(argv=None) -> int:
 
     p_marca_stop = sub.add_parser("marcapasos-stop", help="Detiene Heartkeeper.")
     p_marca_stop.set_defaults(func=cmd_marcapasos_stop)
+
+    p_council = sub.add_parser("council", help="Operación del concilio multi-modelo (texto + receipts).")
+    council_sub = p_council.add_subparsers(dest="council_cmd", required=True)
+    p_council_demo = council_sub.add_parser(
+        "demo",
+        help="Ejecuta flujo mínimo scout->coder->auditor->judge sin tocar código.",
+    )
+    p_council_demo.add_argument(
+        "prompt",
+        nargs=argparse.REMAINDER,
+        help="Prompt opcional para la demo (si no, usa uno por defecto).",
+    )
+    p_council_demo.set_defaults(func=cmd_council_demo)
 
     p_exp = sub.add_parser("experiment", help="THE AJAX PROTOCOL (experiments).")
     p_exp_sub = p_exp.add_subparsers(dest="experiment_cmd", required=True)

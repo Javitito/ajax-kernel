@@ -23,6 +23,14 @@ except Exception:  # pragma: no cover
 from agency.provider_ledger import ProviderLedger
 from agency.provider_failure_policy import load_provider_failure_policy, planning_max_attempts
 from agency.provider_policy import env_rail, load_provider_policy, preferred_providers
+from agency.council_subcall_layer import (
+    CLI_SUBCALL_ROLES,
+    canonical_role,
+    resolve_role_strategy,
+    role_to_default_tier,
+    role_to_provider_role,
+    runtime_identity,
+)
 
 
 STRICT_JSON_ONLY = (
@@ -32,7 +40,7 @@ STRICT_JSON_ONLY = (
 )
 
 
-_SUBCALL_ROLES = {"scout", "reviewer", "summarizer", "validator", "survivor"}
+_SUBCALL_ROLES = set(CLI_SUBCALL_ROLES)
 _TASK_TIERS = {"T0", "T1", "T2"}
 
 
@@ -385,44 +393,37 @@ def _resolve_subcall_timeout_seconds(*, cfg: Dict[str, Any], tier: str, tier_tim
 
 
 def _subcall_role_to_provider_role(role: str) -> str:
-    role_n = (role or "").strip().lower()
-    if role_n == "scout":
-        return "scout"
-    if role_n == "reviewer":
-        return "council"
-    if role_n == "validator":
-        return "council"
-    return "brain"  # summarizer/survivor default
+    return role_to_provider_role(role)
 
 
 def _compile_subcall_prompts(*, role: str, tier: str, prompt: str, json_mode: bool) -> Tuple[str, str]:
-    role_n = (role or "").strip().lower()
+    role_n = canonical_role((role or "").strip().lower())
     tier_u = (tier or "").strip().upper()
     prompt = str(prompt or "").strip()
 
-    if role_n == "validator":
+    if role_n == "judge":
         system = (
-            "You are AJAX Validator.\n"
-            "Validate the given input against the requested constraints.\n"
+            "You are AJAX Judge.\n"
+            "Evaluate the given input and return a verdict with concise rationale.\n"
             "Output MUST follow this JSON schema:\n"
             '{"ok": <bool>, "errors": <list[str]>}\n'
             "Set ok=false if any error.\n"
         )
-    elif role_n == "reviewer":
+    elif role_n == "auditor":
         system = (
-            "You are AJAX Reviewer.\n"
+            "You are AJAX Auditor.\n"
             "Review the given content for correctness and policy compliance.\n"
             "If output is JSON, use a single object and include a clear decision.\n"
         )
-    elif role_n == "summarizer":
+    elif role_n == "planner":
         system = (
-            "You are AJAX Summarizer.\n"
-            "Summarize the given content concisely and accurately.\n"
+            "You are AJAX Planner.\n"
+            "Define scope and a short expected_state-based plan.\n"
         )
-    elif role_n == "survivor":
+    elif role_n == "coder":
         system = (
-            "You are AJAX Survivor.\n"
-            "Produce a robust local-first answer that can run under constrained providers.\n"
+            "You are AJAX Coder.\n"
+            "Propose implementation details and verification steps.\n"
         )
     else:
         system = (
@@ -435,7 +436,7 @@ def _compile_subcall_prompts(*, role: str, tier: str, prompt: str, json_mode: bo
         system = system.rstrip() + "\n\n" + STRICT_JSON_ONLY
 
     user = prompt
-    if json_mode and tier_u == "T0" and role_n == "validator" and not user:
+    if json_mode and tier_u == "T0" and role_n == "judge" and not user:
         user = "Return a JSON object following the schema."
     return system.strip(), user.strip()
 
@@ -571,6 +572,126 @@ def _default_call_provider(provider: str, cfg: Dict[str, Any], system_prompt: st
     raise RuntimeError(f"unsupported_provider_kind:{kind or 'unknown'}")
 
 
+def _reason_code_from_error(error: Optional[str], ladder_tried: List[Dict[str, Any]]) -> str:
+    err = str(error or "").strip().lower()
+    if err.startswith("no_policy_ladder"):
+        return "config_missing"
+    if err.startswith("no_provider_available"):
+        return "no_provider_available"
+    if "auth_missing" in err or "env_missing" in err:
+        return "auth_missing"
+    if "auth_expired" in err or ("expired" in err and "auth" in err):
+        return "auth_expired"
+    if "invalid_api_key" in err or "http_401" in err or "http_403" in err or "unauthorized" in err:
+        return "auth_invalid"
+    if "http_429" in err or "quota" in err or "rate_limit" in err:
+        return "quota_exhausted"
+    if "timeout" in err:
+        return "provider_timeout"
+    if "connection refused" in err or "transport_down" in err or "provider_down" in err:
+        return "provider_down"
+    if any(str(item.get("reason") or "").strip() == "cooldown_active" for item in ladder_tried):
+        return "provider_cooldown_active"
+    probe_failures = [item for item in ladder_tried if str(item.get("error") or "").strip() == "provider_probe_failed"]
+    if probe_failures:
+        detail = " ".join(
+            [
+                str(item.get("probe_error") or "")
+                + " "
+                + str(item.get("detail") or "")
+                for item in probe_failures
+                if isinstance(item, dict)
+            ]
+        ).lower()
+        if "cli_missing" in detail or "not found" in detail or "command not found" in detail:
+            return "cli_not_installed"
+        if "timeout" in detail:
+            return "provider_timeout"
+        if "auth" in detail or "401" in detail or "403" in detail:
+            return "auth_invalid"
+        return "provider_down"
+    if any(str(item.get("error") or "").strip() == "incompatible_for_subcall" for item in ladder_tried):
+        return "config_missing"
+    return "unknown_provider_failure"
+
+
+def _next_hint_for_reason(*, reason_code: str, role: str, provider_role: str) -> List[str]:
+    role_n = canonical_role(role)
+    base = [
+        "python bin/ajaxctl doctor auth",
+        "python bin/ajaxctl doctor council",
+        f'python bin/ajaxctl subcall --role {role_n} "health check"',
+    ]
+    if reason_code in {"config_missing", "no_policy_ladder"}:
+        return base + [
+            "revisa config/provider_policy.yaml (rails.<rail>.roles.<role>.preference)",
+            "revisa config/model_providers.yaml (providers.<id>.roles)",
+        ]
+    if reason_code == "no_provider_available":
+        return base + [f"python bin/ajaxctl doctor providers --roles {provider_role}", "python bin/ajaxctl doctor auth"]
+    if reason_code in {"auth_missing", "provider_auth_failed"}:
+        return base + ["configura auth del provider requerido y reintenta"]
+    if reason_code == "auth_invalid":
+        return base + ["credenciales inválidas: renueva key/sesión y reintenta"]
+    if reason_code == "auth_expired":
+        return base + ["sesión/token expirado: reautentica provider y reintenta"]
+    if reason_code in {"quota_exhausted", "provider_quota_exhausted"}:
+        return base + ["usa fallback cheap/local y reintenta en cooldown"]
+    if reason_code == "provider_timeout":
+        return base + ["verifica disponibilidad de bridge/provider y timeout policy"]
+    if reason_code == "cli_not_installed":
+        return base + ["instala el CLI faltante y confirma PATH del entorno"]
+    if reason_code in {"provider_probe_failed", "provider_down"}:
+        return base + ["python bin/ajaxctl doctor bridge --strict"]
+    if reason_code == "provider_cooldown_active":
+        return base + ["provider en cooldown: espera ventana y reintenta"]
+    return base
+
+
+def _write_role_subcall_artifact(
+    *,
+    root_dir: Path,
+    ts_utc: str,
+    role: str,
+    provider_selected: Optional[str],
+    model_selected: Optional[str],
+    ladder_tried: List[Dict[str, Any]],
+    ok: bool,
+    reason_code: str,
+    next_hint: List[str],
+) -> Optional[Path]:
+    role_n = canonical_role(role)
+    ts_slug = ts_utc.replace("-", "").replace(":", "").replace("T", "T").replace("Z", "Z")
+    out_dir = Path(root_dir) / "artifacts" / "subcalls"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{role_n}_{ts_slug}.json"
+    fallbacks_tried: List[str] = []
+    for item in ladder_tried:
+        if not isinstance(item, dict):
+            continue
+        provider = str(item.get("provider") or "").strip()
+        if not provider:
+            continue
+        if provider_selected and provider == provider_selected:
+            continue
+        if provider not in fallbacks_tried:
+            fallbacks_tried.append(provider)
+    payload = {
+        "schema": "ajax.subcall.role_result.v1",
+        "ts": ts_utc,
+        "role": role_n,
+        "provider_selected": provider_selected,
+        "model_selected": model_selected,
+        "fallbacks_tried": fallbacks_tried,
+        "result": "ok" if ok else "fail_closed",
+        "reason_code": reason_code,
+        "next_hint": list(next_hint),
+        "runtime_identity": runtime_identity(root_dir),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 @dataclass
 class SubcallOutcome:
     ok: bool
@@ -582,10 +703,13 @@ class SubcallOutcome:
     tokens: int
     latency_ms: int
     error: Optional[str]
+    reason_code: str
+    next_hint: List[str]
     output_text: Optional[str]
     output_json: Optional[Dict[str, Any]]
     output_path: Optional[str]
     receipt_path: str
+    role_artifact_path: Optional[str]
 
 
 def run_subcall(
@@ -611,9 +735,12 @@ def run_subcall(
     - Always emits receipt to artifacts/receipts/subcall_<ts>.json.
     """
     root_dir = Path(root_dir)
-    role_n = (role or "").strip().lower()
+    role_raw = (role or "").strip().lower()
+    role_n = canonical_role(role_raw)
     tier_u = (tier or "").strip().upper()
-    if role_n not in _SUBCALL_ROLES:
+    if not tier_u:
+        tier_u = role_to_default_tier(role_n)
+    if role_raw not in _SUBCALL_ROLES and role_n not in _SUBCALL_ROLES:
         raise ValueError(f"invalid_role:{role}")
     if tier_u not in _TASK_TIERS:
         raise ValueError(f"invalid_tier:{tier}")
@@ -634,24 +761,30 @@ def run_subcall(
     caller = caller or _default_call_provider
     provider_role = _subcall_role_to_provider_role(role_n)
     rail = env_rail()
+    strategy = resolve_role_strategy(root_dir, role_n, rail=rail)
+    mode = str(strategy.get("mode") or "balanced")
     cost_mode = (os.getenv("AJAX_COST_MODE") or "").strip().lower()
     if not cost_mode:
-        cost_mode = _default_cost_mode(root_dir)
+        cost_mode = str(strategy.get("cost_mode") or "").strip().lower() or _default_cost_mode(root_dir)
     allow_premium_subcall = bool(allow_premium_subcall)
     if _confirmo_premium(prompt):
         allow_premium_subcall = True
     caller_provider = (caller_provider or os.getenv("AJAX_CALLER_PROVIDER") or "").strip()
     if max_attempts is None:
         try:
-            failure_policy = load_provider_failure_policy(root_dir)
+            fallback_attempts = planning_max_attempts(load_provider_failure_policy(root_dir), default=2)
         except Exception:
-            failure_policy = {}
-        max_attempts = planning_max_attempts(failure_policy, default=2)
+            fallback_attempts = 2
+        max_attempts = int(strategy.get("retries") or 0) or fallback_attempts
     else:
         max_attempts = max(1, int(max_attempts or 1))
 
     policy_doc = load_provider_policy(root_dir)
-    ladder = preferred_providers(policy_doc, rail=rail, role=provider_role)
+    policy_ladder = preferred_providers(policy_doc, rail=rail, role=provider_role)
+    ladder = strategy.get("provider_ladder")
+    if not isinstance(ladder, list):
+        ladder = list(policy_ladder)
+    ladder = [str(item).strip() for item in ladder if str(item).strip()]
     if isinstance(force_provider, str) and force_provider.strip():
         forced = force_provider.strip()
         if forced in ladder:
@@ -729,7 +862,7 @@ def run_subcall(
             return False, None
         if cost_mode == "save_codex" and _exclude_by_prefix(provider) and not allow_premium_subcall:
             return False, None
-        if role_n in {"scout", "reviewer", "summarizer"} and not allow_premium_subcall and _is_codex(provider):
+        if role_n in {"scout", "auditor"} and not allow_premium_subcall and _is_codex(provider):
             return False, None
         roles = cfg_any.get("roles") or []
         roles_l = [str(r).strip().lower() for r in roles] if isinstance(roles, list) else []
@@ -778,8 +911,11 @@ def run_subcall(
         "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
         "tier": tier_u,
         "role": role_n,
+        "role_input": role_raw,
         "provider_role": provider_role,
         "rail": rail,
+        "mode": mode,
+        "strategy": strategy,
         "cost_mode": cost_mode,
         "provider_chosen": None,
         "ladder_tried": [],
@@ -798,13 +934,20 @@ def run_subcall(
         "fallback_reason": None,
         "availability": availability or None,
         "confidence": None,
+        "reason_code": None,
+        "next_hint": [],
     }
     receipt_payload["blocked"] = blocked
     receipt_payload["blocked_reason"] = blocked_reason
 
     try:
         if not ladder:
-            error = f"no_policy_ladder:role={provider_role} rail={rail}"
+            if policy_ladder:
+                error = f"no_provider_available:role={provider_role} rail={rail}"
+            else:
+                error = f"no_policy_ladder:role={provider_role} rail={rail}"
+            reason_code = _reason_code_from_error(error, [])
+            next_hint = _next_hint_for_reason(reason_code=reason_code, role=role_n, provider_role=provider_role)
             terminal = "ASK_USER" if human_present else "GAP_LOGGED"
             return _finalize_subcall(
                 root_dir=root_dir,
@@ -822,10 +965,14 @@ def run_subcall(
                 ok=False,
                 terminal=terminal,
                 error=error,
+                reason_code=reason_code,
+                next_hint=next_hint,
             )
 
         if not eligible_ladder:
             error = f"no_provider_available:role={provider_role} rail={rail}"
+            reason_code = _reason_code_from_error(error, ladder_tried)
+            next_hint = _next_hint_for_reason(reason_code=reason_code, role=role_n, provider_role=provider_role)
             terminal = "ASK_USER" if human_present else "GAP_LOGGED"
             return _finalize_subcall(
                 root_dir=root_dir,
@@ -843,6 +990,8 @@ def run_subcall(
                 ok=False,
                 terminal=terminal,
                 error=error,
+                reason_code=reason_code,
+                next_hint=next_hint,
             )
 
         primary_provider = eligible_ladder[0]
@@ -912,7 +1061,7 @@ def run_subcall(
                 if json_mode:
                     parsed = _parse_json_object_or_event_wrapped(attempt_text or "")
                     schema_err = None
-                    if parsed is not None and role_n == "validator":
+                    if parsed is not None and role_n == "judge":
                         schema_err = _validate_validator_schema(parsed)
                     if parsed is None or schema_err:
                         repair_user = (
@@ -926,7 +1075,7 @@ def run_subcall(
                         attempt_tokens += int(res2.tokens or 0)
                         parsed2 = _parse_json_object_or_event_wrapped(attempt_text or "")
                         schema_err2 = None
-                        if parsed2 is not None and role_n == "validator":
+                        if parsed2 is not None and role_n == "judge":
                             schema_err2 = _validate_validator_schema(parsed2)
                         if parsed2 is None or schema_err2:
                             raise RuntimeError(f"json_parse_error:{schema_err2 or 'invalid_json'}:{(attempt_text or '')[:120]}")
@@ -1008,11 +1157,19 @@ def run_subcall(
             terminal=terminal,
             error=error,
             latency_ms=latency_ms,
+            reason_code="ok" if ok else _reason_code_from_error(error, ladder_tried),
+            next_hint=[] if ok else _next_hint_for_reason(
+                reason_code=_reason_code_from_error(error, ladder_tried),
+                role=role_n,
+                provider_role=provider_role,
+            ),
         )
     except Exception as exc:
         latency_ms = int((_now_ts() - started) * 1000)
         error = str(exc)
         terminal = "ASK_USER" if human_present else "GAP_LOGGED"
+        reason_code = _reason_code_from_error(error, ladder_tried)
+        next_hint = _next_hint_for_reason(reason_code=reason_code, role=role_n, provider_role=provider_role)
         return _finalize_subcall(
             root_dir=root_dir,
             receipt_path=receipt_path,
@@ -1030,6 +1187,8 @@ def run_subcall(
             terminal=terminal,
             error=error,
             latency_ms=latency_ms,
+            reason_code=reason_code,
+            next_hint=next_hint,
         )
 
 
@@ -1050,6 +1209,8 @@ def _finalize_subcall(
     ok: bool,
     terminal: str,
     error: Optional[str],
+    reason_code: str,
+    next_hint: List[str],
     latency_ms: Optional[int] = None,
 ) -> SubcallOutcome:
     if latency_ms is None:
@@ -1061,6 +1222,8 @@ def _finalize_subcall(
     receipt_payload["ok"] = bool(ok)
     receipt_payload["terminal"] = str(terminal)
     receipt_payload["error"] = str(error)[:400] if error else None
+    receipt_payload["reason_code"] = str(reason_code or "")
+    receipt_payload["next_hint"] = list(next_hint or [])
     receipt_payload["output_path"] = _safe_relpath(output_path, root_dir) if output_path else None
 
     gap_path: Optional[Path] = None
@@ -1094,6 +1257,28 @@ def _finalize_subcall(
         except Exception:
             gap_path = None
 
+    role_artifact_path: Optional[Path] = None
+    try:
+        model_selected = None
+        used_model = receipt_payload.get("used_model")
+        if isinstance(used_model, dict):
+            model_selected = used_model.get("model_id")
+        role_artifact_path = _write_role_subcall_artifact(
+            root_dir=root_dir,
+            ts_utc=str(receipt_payload.get("ts_utc") or _ts_slug()),
+            role=role,
+            provider_selected=provider_chosen,
+            model_selected=str(model_selected) if model_selected else None,
+            ladder_tried=ladder_tried,
+            ok=bool(ok),
+            reason_code=reason_code,
+            next_hint=list(next_hint or []),
+        )
+    except Exception:
+        role_artifact_path = None
+    receipt_payload["role_artifact_path"] = (
+        _safe_relpath(role_artifact_path, root_dir) if role_artifact_path else None
+    )
     try:
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         receipt_path.write_text(json.dumps(receipt_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1109,8 +1294,11 @@ def _finalize_subcall(
         tokens=int(tokens or 0),
         latency_ms=int(latency_ms),
         error=str(error) if error else None,
+        reason_code=str(reason_code or ""),
+        next_hint=list(next_hint or []),
         output_text=output_text,
         output_json=output_json,
         output_path=_safe_relpath(output_path, root_dir) if output_path else None,
         receipt_path=_safe_relpath(receipt_path, root_dir),
+        role_artifact_path=_safe_relpath(role_artifact_path, root_dir) if role_artifact_path else None,
     )
