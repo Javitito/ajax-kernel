@@ -1,9 +1,57 @@
-# 01 - Interfaces (CLI Surface, As Implemented)
+# 01 - Interfaces (Code-First, Live)
 
 ## Scope
-Superficie CLI relevante para loop EFE, metabolismo, friccion y session anchor LAB.
+Live CLI and operator-visible contracts in `ajax-kernel` main.
+Only commands verified in current help output or code are listed here.
 
-## As Implemented (main)
+## Core CLI Surface
+
+| Command | Live contract |
+| --- | --- |
+| `python bin/ajaxctl doctor {drivers,anchor,boot,vision,auth,council,providers,provider,bridge,leann,topology,receipts,metabolism}` | Read-only diagnostics for runtime, provider health, topology, receipts, and loop state. |
+| `python bin/ajaxctl providers status [--json] [--no-refresh]` | Provider snapshot and preflight entrypoint. Refreshes or reuses `providers_status` / ledger state. |
+| `python bin/ajaxctl providers ping --provider <id> [--model <id>] [--timeout-ttft ms] [--timeout-total ms] [--timeout-stall ms] [--json]` | Deterministic provider ping with TTFT / stall / total timeout overrides. |
+| `python bin/ajaxctl provider ping ...` | Alias for `providers ping`. |
+| `python bin/ajaxctl subcall --role <role> --tier <T0|T1|T2> [--json] [--stdin] [--allow-premium-subcall]` | DEV delegation surface. Emits durable subcall receipts and role artifacts. |
+| `python bin/ajaxctl council demo` | Minimal scout -> coder -> auditor -> judge flow without touching code. |
+| `python bin/ajaxctl verify efe apply-candidate --gap <gap.json> --out <efe_final.json>` | Read-only helper that materializes editable EFE from a gap candidate. |
+| `python bin/ajaxctl ops friction gc --dry-run|--apply [--older-than-hours N]` | Safe hygiene for `waiting_for_user` backlog and provider ledger minimum-budget reset. |
+| `python bin/ajaxctl lab ensure --rail {lab,prod}` | Idempotent LAB rail start/recovery with verify fail-closed. |
+| `python bin/ajaxctl lab start|stop|restart|status` | Direct LAB worker lifecycle controls. |
+| `python bin/ajaxctl lab session {init,status,revoke}` | File-based expected session anchor for LAB. |
+| `python bin/ajaxctl lab autopilot [--dry-run|--once|--daemon ...]` | Periodic LAB worker that runs gated background tasks. |
+| `python bin/ajaxctl lab {queue,enqueue,acknowledge,inbox,cancel,requeue,snap,prune,web,pause-org,resume-org,probe-complete,probe-apply}` | Queue, evidence, and maintenance controls exposed by current `lab --help`. |
+
+## Diagnostics With Explicit Runtime Contracts
+
+### `doctor auth`
+
+```text
+python bin/ajaxctl doctor auth [--json] [--timeout <seconds>]
+```
+
+- Real auth, reachability, and quota diagnostic for council providers.
+- Produces actionable `next_hint` entries such as `doctor council` or retrying subcalls after auth fixes.
+
+### `doctor council`
+
+```text
+python bin/ajaxctl doctor council [--json]
+```
+
+- Checks executable council health.
+- Includes role strategy, auth/config status, and latest subcall evidence by role.
+
+### `doctor receipts`
+
+```text
+python bin/ajaxctl doctor receipts [--since-min <minutes>] [--strict] [--top-k N] [--summary-only] [--json]
+```
+
+- Scans recent receipts under `artifacts/receipts/`.
+- Current behavior is `PASS / WARN / FAIL`, not binary-only.
+- `--strict` upgrades WARN rows to a failing exit code.
+- `--top-k` and `--summary-only` are live today.
 
 ### `doctor metabolism`
 
@@ -11,66 +59,32 @@ Superficie CLI relevante para loop EFE, metabolismo, friccion y session anchor L
 python bin/ajaxctl doctor metabolism --since-min <minutes>
 ```
 
-- Handler: `cmd_doctor_metabolism`.
-- Fuente: `agency.metabolism_doctor.run_doctor_metabolism`.
-- Output: JSON schema `ajax.doctor.metabolism.v0`.
-- Entradas agregadas (read-only): capability gaps, `artifacts/efe_candidates`, provider ledger + `router_ladder_decision_*.json`, waiting backlog.
-- Salidas clave: `gaps`, `efe_candidates`, `provider`, `waiting_backlog`, `next_hint`, `critical`, `exit_code`.
+- Summarizes recent capability gaps, `efe_candidates`, provider state, and `waiting_for_user` backlog.
+- Returns hints such as `verify efe apply-candidate` or `ops friction gc --dry-run`.
 
-### `ops friction gc`
+## Provider and Governance Surface
 
-```text
-python bin/ajaxctl ops friction gc --dry-run [--older-than-hours 24]
-python bin/ajaxctl ops friction gc --apply   [--older-than-hours 24]
-```
+- `subcall` routes by role, tier, cost mode, provider policy, and provider ledger.
+- `council_subcall_layer` keeps a live role strategy for `scout`, `coder`, `auditor`, and `judge`.
+- `doctor auth` and `doctor council` are the primary operator entrypoints when subcalls degrade because of auth, quota, bridge, or timeout problems.
+- `providers status` is the explicit health snapshot surface; `providers ping` is the explicit latency surface.
 
-- Handler: `cmd_ops_friction_gc`.
-- Fuente: `agency.friction.run_friction_gc`.
-- `--dry-run`: reporta candidatos sin mover archivos.
-- `--apply`: archiva waiting antiguos y aplica policy minima al provider ledger (con snapshot).
-- Output: JSON schema `ajax.ops.friction_gc.v1`.
+## LAB Control Surface
 
-### `verify efe apply-candidate`
+- `lab ensure` is the safest entrypoint for starting or recovering the LAB rail.
+- `lab start|stop|restart|status` are the direct worker controls.
+- `lab session init|status|revoke` manages the expected LAB session anchor stored in `artifacts/lab/session/expected_session.json`.
+- `lab autopilot` is the periodic, gated background loop with `--dry-run`, `--once`, and `--daemon`.
+- Queue and maintenance commands remain part of the live surface exposed by `lab --help`.
 
-```text
-python bin/ajaxctl verify efe apply-candidate --gap <gap.json> --out <efe_final.json>
-```
+## Evidence Pointers
 
-- Handler: `cmd_verify_efe_apply_candidate`.
-- Fuente: `agency.verify.efe_apply_candidate.apply_efe_candidate_from_gap`.
-- Comportamiento: lee `efe_candidate_path` del gap, extrae `expected_state`, escribe payload final editable.
-- Importante: no ejecuta acciones; solo materializa evidencia/contrato.
+| Interface family | Evidence pointers |
+| --- | --- |
+| Doctor CLI | `bin/ajaxctl --help`, `bin/ajaxctl doctor --help`, `agency/auth_provider_diagnostics.py`, `agency/council_subcall_layer.py` |
+| Provider status / ping | `bin/ajaxctl providers --help`, `bin/ajaxctl providers ping --help`, `agency/ajax_core.py` |
+| Subcall / council demo | `bin/ajaxctl subcall --help`, `bin/ajaxctl council --help`, `agency/subcall.py`, `agency/council_subcall_layer.py` |
+| EFE helper | `bin/ajaxctl verify efe apply-candidate --help`, `agency/verify/efe_apply_candidate.py` |
+| Friction GC | `bin/ajaxctl ops friction gc --help`, `agency/friction.py`, `tests/test_kernel_friction_gc_v1.py` |
+| LAB controls | `bin/ajaxctl lab --help`, `bin/ajaxctl lab session --help`, `agency/lab_session_anchor.py`, `agency/lab_autopilot.py` |
 
-### `lab session` (expected session anchor)
-
-```text
-python bin/ajaxctl lab session init   --ttl-min 120 --display dummy --rail lab
-python bin/ajaxctl lab session status [--write-receipt]
-python bin/ajaxctl lab session revoke
-```
-
-- Fuente: `agency.lab_session_anchor`.
-- Archivo canonico: `artifacts/lab/session/expected_session.json`.
-- Receipts: `lab_session_init_*`, `lab_session_status_*`, `lab_session_revoke_*`.
-
-### `doctor receipts` (estado actual)
-
-```text
-python bin/ajaxctl doctor receipts --since-min <minutes> [--json]
-```
-
-- Fuente: `agency.receipt_validator`.
-- En `main`: clasificacion binaria `PASS/FAIL` (`status`), sin canal `WARN`, sin `--strict`, sin `--summary-only`, sin `--top-k`.
-
-## Notes / Planned
-- Politica `PASS/WARN/FAIL` con `--strict` esta marcada para siguiente PR (no presente en `main` actual).
-
-## Implemented vs Planned
-
-| Item | Status | Evidence pointers |
-|---|---|---|
-| `doctor metabolism` registrado y operativo | Implemented | `bin/ajaxctl` (`cmd_doctor_metabolism`, parser `doctor metabolism`), `agency/metabolism_doctor.py` |
-| `ops friction gc` con `--dry-run`/`--apply` | Implemented | `bin/ajaxctl` (`cmd_ops_friction_gc`, parser `ops friction gc`), `agency/friction.py` |
-| `verify efe apply-candidate` evidence-only | Implemented | `bin/ajaxctl` + `agency/verify/efe_apply_candidate.py` |
-| `lab session init/status/revoke` | Implemented | `bin/ajaxctl` + `agency/lab_session_anchor.py` |
-| `doctor receipts` con severidad WARN + `--strict` | Planned next PR | `agency/receipt_validator.py` y parser actual sin esos flags |
