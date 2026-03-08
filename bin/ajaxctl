@@ -154,12 +154,14 @@ try:
         run_desktop_compiler,
         run_desktop_demo,
         run_desktop_scout,
+        run_desktop_verify_demo,
     )
 except Exception:
     run_desktop_arbiter = None  # type: ignore
     run_desktop_compiler = None  # type: ignore
     run_desktop_demo = None  # type: ignore
     run_desktop_scout = None  # type: ignore
+    run_desktop_verify_demo = None  # type: ignore
 try:
     from agency.desktop_operator_lab import run_desktop_operate, run_desktop_operate_demo
 except Exception:
@@ -7646,6 +7648,23 @@ def cmd_desktop_demo(args: argparse.Namespace) -> int:
     return 0 if bool(payload.get("ok")) else 2
 
 
+def cmd_desktop_verify_demo(args: argparse.Namespace) -> int:
+    if run_desktop_verify_demo is None:
+        print("desktop verify-demo no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        payload = run_desktop_verify_demo(
+            ROOT,
+            rail=getattr(args, "rail", None) or "lab",
+            screenshot_path=getattr(args, "screenshot", None),
+        )
+    except Exception as exc:
+        print(f"desktop verify-demo falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
 def cmd_desktop_operate(args: argparse.Namespace) -> int:
     if run_desktop_operate is None:
         print("desktop operate no disponible (módulo no importable).", file=sys.stderr)
@@ -8692,6 +8711,13 @@ def main(argv=None) -> int:
     p_desktop_demo.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
     p_desktop_demo.add_argument("--screenshot", help="Path opcional de screenshot; si falta, usa fixture local.")
     p_desktop_demo.set_defaults(func=cmd_desktop_demo)
+    p_desktop_verify_demo = desktop_sub.add_parser(
+        "verify-demo",
+        help="Construye un DesktopVerifyInput fixture y evalúa el contrato compartido desktop_v1.",
+    )
+    p_desktop_verify_demo.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_desktop_verify_demo.add_argument("--screenshot", help="Path opcional de screenshot; si falta, usa fixture local.")
+    p_desktop_verify_demo.set_defaults(func=cmd_desktop_verify_demo)
     p_desktop_operate = desktop_sub.add_parser(
         "operate",
         help="Ejecuta una acción LAB allowlisted con PREPARE -> APPLY -> VERIFY -> UNDO_INFO.",

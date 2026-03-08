@@ -101,6 +101,14 @@ def _fake_arbiter_pass(tmp_path: Path):
     def _run(root_dir, *, rail, mode, screenshot_path, objective, strategy=None, expected_efe_desktop=None, metadata=None):  # noqa: ANN001
         suffix = "pre" if mode == "pre" else "post"
         path = Path(root_dir) / "artifacts" / "desktop" / f"arbiter_{suffix}_fake.json"
+        verification_result = {
+            "verdict": "pass",
+            "mismatches": [],
+            "reason_code": "ok",
+            "next_hint": "",
+            "confidence": "high",
+            "verification_contract_version": "desktop_v1",
+        }
         payload = {
             "schema": "ajax.desktop.arbiter.v1",
             "role": "desktop_arbiter",
@@ -108,9 +116,9 @@ def _fake_arbiter_pass(tmp_path: Path):
             "mode": mode,
             "ok": True,
             "strategy_ok": True,
-            "mismatches": [],
             "visual_risks": [],
-            "post_action_verdict": "pass" if mode == "post" else "uncertain",
+            "verify_input": {"verification_contract_version": "desktop_v1"},
+            "verification_result": verification_result,
             "artifact_path": str(path),
         }
         _write_json(path, payload)
@@ -129,9 +137,24 @@ def _fake_arbiter_pre_fail(tmp_path: Path):
             "mode": mode,
             "ok": True,
             "strategy_ok": False,
-            "mismatches": ["strategy_contains_destructive_or_secretive_terms"],
             "visual_risks": ["dialog_present:fixture"],
-            "post_action_verdict": "uncertain",
+            "verify_input": {"verification_contract_version": "desktop_v1"},
+            "verification_result": {
+                "verdict": "fail",
+                "mismatches": [
+                    {
+                        "field": "strategy_candidate",
+                        "expected": "safe LAB strategy",
+                        "observed": "fixture",
+                        "severity": "high",
+                        "note": "strategy blocked",
+                    }
+                ],
+                "reason_code": "strategy_validation_failed",
+                "next_hint": "revise strategy",
+                "confidence": "high",
+                "verification_contract_version": "desktop_v1",
+            },
             "artifact_path": str(path),
         }
         _write_json(path, payload)
@@ -393,8 +416,24 @@ def test_operator_writes_verify_input(tmp_path: Path, monkeypatch) -> None:
     )
     verify_input = payload["verify"]["verify_input"]
     assert verify_input["operation_class"] == "open_app"
-    assert verify_input["verify_spec"]["name"].startswith("verify.")
+    assert verify_input["verify_spec_ref"].startswith("verify.")
     assert verify_input["after_state"]["post_action_verdict"] == "pass"
+
+
+def test_operator_uses_shared_verify_contract(tmp_path: Path, monkeypatch) -> None:
+    _patch_operator_success(monkeypatch, tmp_path)
+    payload = operator_mod.run_desktop_operate(
+        tmp_path,
+        rail="lab",
+        action_type="launch_test_app",
+        objective="Launch test app",
+        expected_efe_desktop={},
+        app="notepad.exe",
+        target={"process": "notepad.exe"},
+    )
+    assert payload["verification_contract_version"] == "desktop_v1"
+    assert payload["verify"]["verify_input"]["verification_contract_version"] == "desktop_v1"
+    assert payload["verify"]["verification_result"]["verification_contract_version"] == "desktop_v1"
 
 
 def test_operator_includes_undo_info_from_spec(tmp_path: Path, monkeypatch) -> None:
@@ -421,10 +460,22 @@ def test_operator_verdict_uses_reusable_evaluator(tmp_path: Path, monkeypatch) -
         lambda **kwargs: {
             "expected_efe_desktop": {"active_window_title_contains": "synthetic"},
             "verify_input": {"operation_class": "open_app"},
-            "verdict": "uncertain",
-            "mismatches": ["synthetic_uncertain"],
-            "reason_code": "verify_uncertain",
-            "next_hint": "collect more evidence",
+            "verification_result": {
+                "verdict": "uncertain",
+                "mismatches": [
+                    {
+                        "field": "synthetic_uncertain",
+                        "expected": None,
+                        "observed": None,
+                        "severity": "medium",
+                        "note": "collect more evidence",
+                    }
+                ],
+                "reason_code": "verify_uncertain",
+                "next_hint": "collect more evidence",
+                "confidence": "low",
+                "verification_contract_version": "desktop_v1",
+            },
         },
         raising=True,
     )
@@ -437,7 +488,7 @@ def test_operator_verdict_uses_reusable_evaluator(tmp_path: Path, monkeypatch) -
         app="notepad.exe",
         target={"process": "notepad.exe"},
     )
-    assert payload["verify"]["verdict"] == "uncertain"
+    assert payload["verify"]["verification_result"]["verdict"] == "uncertain"
     assert payload["reason_code"] == "verify_uncertain"
     assert payload["next_hint"] == "collect more evidence"
 
@@ -471,6 +522,22 @@ def test_operate_demo_writes_audit_artifact(tmp_path: Path, monkeypatch) -> None
     assert Path(str(payload["artifact_path"])).exists()
     assert payload["schema"] == operator_mod.OPERATION_DEMO_SCHEMA
     assert len(payload["steps"]) == 2
+
+
+def test_receipts_include_shared_contract(tmp_path: Path, monkeypatch) -> None:
+    _patch_operator_success(monkeypatch, tmp_path)
+    payload = operator_mod.run_desktop_operate(
+        tmp_path,
+        rail="lab",
+        action_type="launch_test_app",
+        objective="Launch test app",
+        expected_efe_desktop={},
+        app="notepad.exe",
+        target={"process": "notepad.exe"},
+    )
+    receipt = json.loads(Path(str(payload["receipt_path"])).read_text(encoding="utf-8"))
+    assert receipt["verification_contract_version"] == "desktop_v1"
+    assert receipt["verification_result"]["verification_contract_version"] == "desktop_v1"
 
 
 def test_no_constitution_files_touched_guard() -> None:

@@ -69,6 +69,36 @@
       "items": {
         "type": "string"
       }
+    },
+    "verification_contract_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verify_input": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "verification_result": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "verification_results": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "verdict": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "additionalProperties": true

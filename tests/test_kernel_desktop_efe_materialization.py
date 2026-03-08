@@ -59,8 +59,9 @@ def test_build_verify_input_shape() -> None:
         },
     )
     assert verify_input["operation_class"] == "open_app"
-    assert verify_input["verify_spec"]["name"].startswith("verify.")
-    assert verify_input["after_state"]["screenshot_path"] == "after.png"
+    assert verify_input["verify_spec_ref"].startswith("verify.")
+    assert verify_input["screenshot_after"] == "after.png"
+    assert verify_input["verification_contract_version"] == "desktop_v1"
 
 
 def test_evaluate_desktop_efe_pass() -> None:
@@ -74,8 +75,10 @@ def test_evaluate_desktop_efe_pass() -> None:
             "post_arbiter": {"post_action_verdict": "pass", "mismatches": []},
         },
     )
-    assert result["verdict"] == "pass"
-    assert result["mismatches"] == []
+    verification_result = result["verification_result"]
+    assert verification_result["verdict"] == "pass"
+    assert verification_result["mismatches"] == []
+    assert verification_result["verification_contract_version"] == "desktop_v1"
 
 
 def test_evaluate_desktop_efe_fail() -> None:
@@ -89,8 +92,9 @@ def test_evaluate_desktop_efe_fail() -> None:
             "post_arbiter": {"post_action_verdict": "pass", "mismatches": []},
         },
     )
-    assert result["verdict"] == "fail"
-    assert "expected_visible_text_missing" in result["mismatches"]
+    verification_result = result["verification_result"]
+    assert verification_result["verdict"] == "fail"
+    assert verification_result["mismatches"][0]["field"] == "visible_text_any"
 
 
 def test_evaluate_desktop_efe_uncertain() -> None:
@@ -103,5 +107,6 @@ def test_evaluate_desktop_efe_uncertain() -> None:
             "post_arbiter": {"post_action_verdict": "uncertain", "mismatches": []},
         },
     )
-    assert result["verdict"] == "uncertain"
-    assert result["reason_code"] in {"verify_evidence_incomplete", "verify_uncertain"}
+    verification_result = result["verification_result"]
+    assert verification_result["verdict"] == "uncertain"
+    assert verification_result["reason_code"] in {"verify_evidence_incomplete", "verify_uncertain"}
