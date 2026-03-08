@@ -366,6 +366,37 @@ def test_operator_includes_expected_efe_from_spec(tmp_path: Path, monkeypatch) -
     assert resolved["visual_markers_any"] == ["notepad.exe"]
 
 
+def test_operator_writes_materialized_efe(tmp_path: Path, monkeypatch) -> None:
+    _patch_operator_success(monkeypatch, tmp_path)
+    payload = operator_mod.run_desktop_operate(
+        tmp_path,
+        rail="lab",
+        action_type="launch_test_app",
+        objective="Launch test app",
+        expected_efe_desktop={},
+        app="notepad.exe",
+        target={"process": "notepad.exe"},
+    )
+    assert payload["prepare"]["expected_efe_desktop_materialized"]["visual_markers_any"] == ["notepad.exe"]
+
+
+def test_operator_writes_verify_input(tmp_path: Path, monkeypatch) -> None:
+    _patch_operator_success(monkeypatch, tmp_path)
+    payload = operator_mod.run_desktop_operate(
+        tmp_path,
+        rail="lab",
+        action_type="launch_test_app",
+        objective="Launch test app",
+        expected_efe_desktop={},
+        app="notepad.exe",
+        target={"process": "notepad.exe"},
+    )
+    verify_input = payload["verify"]["verify_input"]
+    assert verify_input["operation_class"] == "open_app"
+    assert verify_input["verify_spec"]["name"].startswith("verify.")
+    assert verify_input["after_state"]["post_action_verdict"] == "pass"
+
+
 def test_operator_includes_undo_info_from_spec(tmp_path: Path, monkeypatch) -> None:
     _patch_operator_success(monkeypatch, tmp_path)
     payload = operator_mod.run_desktop_operate(
@@ -380,6 +411,35 @@ def test_operator_includes_undo_info_from_spec(tmp_path: Path, monkeypatch) -> N
     assert payload["undo_info"]["name"] == operation_specs.UNDO_SPECS["open_app"]["name"]
     assert payload["undo_info"]["possible"] is True
     assert isinstance(payload["undo_info"]["suggested_steps"], list)
+
+
+def test_operator_verdict_uses_reusable_evaluator(tmp_path: Path, monkeypatch) -> None:
+    _patch_operator_success(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        operator_mod,
+        "evaluate_desktop_efe",
+        lambda **kwargs: {
+            "expected_efe_desktop": {"active_window_title_contains": "synthetic"},
+            "verify_input": {"operation_class": "open_app"},
+            "verdict": "uncertain",
+            "mismatches": ["synthetic_uncertain"],
+            "reason_code": "verify_uncertain",
+            "next_hint": "collect more evidence",
+        },
+        raising=True,
+    )
+    payload = operator_mod.run_desktop_operate(
+        tmp_path,
+        rail="lab",
+        action_type="launch_test_app",
+        objective="Launch test app",
+        expected_efe_desktop={},
+        app="notepad.exe",
+        target={"process": "notepad.exe"},
+    )
+    assert payload["verify"]["verdict"] == "uncertain"
+    assert payload["reason_code"] == "verify_uncertain"
+    assert payload["next_hint"] == "collect more evidence"
 
 
 def test_operate_demo_registered() -> None:

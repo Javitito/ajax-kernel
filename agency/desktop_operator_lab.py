@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agency.close_editor_safe import close_editor_safe
-from agency.desktop_operation_specs import resolve_operation_contract
+from agency.desktop_operation_specs import evaluate_desktop_efe, resolve_operation_contract
 from agency.desktop_roles import _build_lab_gate as build_desktop_lab_gate
 from agency.desktop_roles import run_desktop_arbiter, run_desktop_scout
 from agency.lab_snap import capture_lab_snapshot
@@ -348,6 +348,7 @@ def _write_operation_artifact(root_dir: Path, payload: Dict[str, Any], *, ts: Op
         "operation_class": payload.get("operation_class"),
         "verify_spec_name": _as_dict(_as_dict(payload.get("prepare")).get("verify_spec")).get("name"),
         "undo_spec_name": _as_dict(payload.get("undo_info")).get("name"),
+        "verdict": str(_as_dict(payload.get("verify")).get("verdict") or ""),
         "post_verdict": _as_dict(payload.get("verify")).get("post_verdict"),
     }
     _safe_write_json(receipt_path, receipt)
@@ -390,6 +391,8 @@ def run_desktop_operate(
         app=app or str(normalized_target.get("process") or "").strip() or None,
         expected_efe_desktop=expected_efe_desktop if isinstance(expected_efe_desktop, dict) else None,
     )
+    operation_context = _as_dict(resolved_contract.get("context"))
+    materialized_expected_efe = _as_dict(resolved_contract.get("expected_efe_desktop_materialized"))
     resolved_expected_efe = _as_dict(resolved_contract.get("expected_efe_desktop"))
     verify_spec = _as_dict(resolved_contract.get("verify_spec"))
     undo_info = _as_dict(resolved_contract.get("undo_info"))
@@ -403,13 +406,15 @@ def run_desktop_operate(
             "screenshot_before": screenshot_path,
             "pre_verdict": "fail",
             "visual_risks": [],
+            "expected_efe_desktop_materialized": materialized_expected_efe,
             "expected_efe_desktop": resolved_expected_efe,
             "verify_spec": verify_spec,
             "contract_source": resolved_contract.get("contract_source"),
         },
         "apply": {"executed": False, "action_detail": {}},
-        "verify": {"screenshot_after": None, "post_verdict": "fail", "mismatches": []},
+        "verify": {"screenshot_after": None, "post_verdict": "fail", "verdict": "fail", "verify_input": {}, "mismatches": []},
         "undo_info": undo_info or {"possible": False, "suggested_steps": []},
+        "verdict": "fail",
         "result": "fail_closed",
         "reason_code": "pending",
         "next_hint": "",
@@ -551,21 +556,39 @@ def run_desktop_operate(
         if bool(post_arbiter.get("ok"))
         else "fail"
     )
-    payload["verify"]["mismatches"] = _as_text_list(post_arbiter.get("mismatches"))
+    verify_eval = evaluate_desktop_efe(
+        operation_class=str(resolved_contract.get("operation_class") or "") or None,
+        context=operation_context,
+        before_state={
+            "screenshot_path": screenshot_before,
+            "metadata": {},
+        },
+        after_state={
+            "screenshot_path": screenshot_after,
+            "runtime_metadata": runtime_metadata,
+            "post_arbiter": post_arbiter,
+        },
+        expected_efe_desktop=resolved_expected_efe,
+        verify_spec=verify_spec,
+    )
+    payload["verify"]["verify_input"] = verify_eval.get("verify_input") or {}
+    payload["verify"]["verdict"] = str(verify_eval.get("verdict") or "fail")
+    payload["verify"]["mismatches"] = _as_text_list(verify_eval.get("mismatches"))
     payload["verify"]["post_arbiter_artifact_path"] = post_arbiter.get("artifact_path")
     payload["prepare"]["scout_artifact_path"] = scout.get("artifact_path")
     payload["prepare"]["pre_arbiter_artifact_path"] = pre_arbiter.get("artifact_path")
+    payload["verdict"] = payload["verify"]["verdict"]
 
-    if payload["verify"]["post_verdict"] == "pass":
+    if payload["verify"]["verdict"] == "pass":
         payload["result"] = "ok"
         payload["reason_code"] = "ok"
         payload["next_hint"] = ""
-    elif payload["verify"]["post_verdict"] == "uncertain":
-        payload["reason_code"] = "verify_uncertain"
-        payload["next_hint"] = _reason_hint("verify_uncertain")
+    elif payload["verify"]["verdict"] == "uncertain":
+        payload["reason_code"] = str(verify_eval.get("reason_code") or "verify_uncertain")
+        payload["next_hint"] = str(verify_eval.get("next_hint") or _reason_hint("verify_uncertain"))
     else:
-        payload["reason_code"] = "verify_fail"
-        payload["next_hint"] = _reason_hint("verify_fail")
+        payload["reason_code"] = str(verify_eval.get("reason_code") or "verify_fail")
+        payload["next_hint"] = str(verify_eval.get("next_hint") or _reason_hint("verify_fail"))
 
     return _write_operation_artifact(root, payload)
 
