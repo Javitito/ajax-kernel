@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ajax.desktop.role_receipt.v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "ts_utc",
+    "role",
+    "rail",
+    "ok",
+    "reason_code",
+    "artifact_path",
+    "next_hint"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ajax.desktop.role_receipt.v1"
+    },
+    "ts_utc": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "desktop_scout",
+        "desktop_arbiter",
+        "desktop_compiler",
+        "desktop_operator_lab"
+      ]
+    },
+    "rail": {
+      "type": "string",
+      "enum": [
+        "lab",
+        "prod"
+      ]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "reason_code": {
+      "type": "string"
+    },
+    "artifact_path": {
+      "type": "string"
+    },
+    "next_hint": {
+      "type": "string"
+    },
+    "mode": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "pre",
+        "post",
+        null
+      ]
+    },
+    "anchor_receipt_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}
