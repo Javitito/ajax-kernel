@@ -55,6 +55,8 @@ def _schema_path_for_receipt(root_dir: Path, receipt_schema: str) -> Optional[Pa
         return schemas_dir / "ajax.lab.autopilot_tick.v1.schema.json"
     if receipt_schema in {"ajax.topology_doctor.v0", "ajax.topology_doctor.v1"}:
         return schemas_dir / "ajax.topology_doctor.v0.schema.json"
+    if receipt_schema == "ajax.desktop.role_receipt.v1":
+        return schemas_dir / "ajax.desktop.role_receipt.v1.schema.json"
     return None
 
 

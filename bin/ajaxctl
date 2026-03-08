@@ -149,6 +149,23 @@ except Exception:
     capture_desktop_snapshot = None  # type: ignore
     list_local_displays = None  # type: ignore
 try:
+    from agency.desktop_roles import (
+        run_desktop_arbiter,
+        run_desktop_compiler,
+        run_desktop_demo,
+        run_desktop_scout,
+    )
+except Exception:
+    run_desktop_arbiter = None  # type: ignore
+    run_desktop_compiler = None  # type: ignore
+    run_desktop_demo = None  # type: ignore
+    run_desktop_scout = None  # type: ignore
+try:
+    from agency.desktop_operator_lab import run_desktop_operate, run_desktop_operate_demo
+except Exception:
+    run_desktop_operate = None  # type: ignore
+    run_desktop_operate_demo = None  # type: ignore
+try:
     from agency.display_targets import load_display_map, resolve_display_selection, save_display_map, fetch_driver_displays
 except Exception:
     load_display_map = None  # type: ignore
@@ -7541,6 +7558,139 @@ def cmd_desktop_snap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_desktop_scout(args: argparse.Namespace) -> int:
+    if run_desktop_scout is None:
+        print("desktop scout no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        strategy = _load_json_input(getattr(args, "strategy_file", None), getattr(args, "strategy_json", None))
+        metadata = _load_json_input(getattr(args, "metadata_file", None), getattr(args, "metadata_json", None))
+        payload = run_desktop_scout(
+            ROOT,
+            rail=getattr(args, "rail", None) or "lab",
+            screenshot_path=str(getattr(args, "screenshot")),
+            objective=str(getattr(args, "objective") or ""),
+            strategy=strategy,
+            metadata=metadata if isinstance(metadata, dict) else None,
+            context=getattr(args, "context", None),
+        )
+    except Exception as exc:
+        print(f"desktop scout falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
+def cmd_desktop_arbiter(args: argparse.Namespace) -> int:
+    if run_desktop_arbiter is None:
+        print("desktop arbiter no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        strategy = _load_json_input(getattr(args, "strategy_file", None), getattr(args, "strategy_json", None))
+        metadata = _load_json_input(getattr(args, "metadata_file", None), getattr(args, "metadata_json", None))
+        expected_efe_desktop = _load_json_input(
+            getattr(args, "expected_efe_file", None),
+            getattr(args, "expected_efe_json", None),
+        )
+        payload = run_desktop_arbiter(
+            ROOT,
+            rail=getattr(args, "rail", None) or "lab",
+            mode=getattr(args, "mode", None) or "pre",
+            screenshot_path=str(getattr(args, "screenshot")),
+            objective=str(getattr(args, "objective") or ""),
+            strategy=strategy,
+            expected_efe_desktop=expected_efe_desktop if isinstance(expected_efe_desktop, dict) else None,
+            metadata=metadata if isinstance(metadata, dict) else None,
+        )
+    except Exception as exc:
+        print(f"desktop arbiter falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
+def cmd_desktop_compile(args: argparse.Namespace) -> int:
+    if run_desktop_compiler is None:
+        print("desktop compile no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        context = _load_json_input(getattr(args, "context_file", None), getattr(args, "context_json", None))
+        payload = run_desktop_compiler(
+            ROOT,
+            rail=getattr(args, "rail", None) or "lab",
+            scout_artifact_path=str(getattr(args, "scout_artifact")),
+            arbiter_artifact_paths=[str(item) for item in list(getattr(args, "arbiter_artifact", []) or [])],
+            context=context if isinstance(context, dict) else None,
+        )
+    except Exception as exc:
+        print(f"desktop compile falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
+def cmd_desktop_demo(args: argparse.Namespace) -> int:
+    if run_desktop_demo is None:
+        print("desktop demo no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        payload = run_desktop_demo(
+            ROOT,
+            rail=getattr(args, "rail", None) or "lab",
+            screenshot_path=getattr(args, "screenshot", None),
+        )
+    except Exception as exc:
+        print(f"desktop demo falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
+def cmd_desktop_operate(args: argparse.Namespace) -> int:
+    if run_desktop_operate is None:
+        print("desktop operate no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        expected_efe_desktop = _load_json_input(
+            getattr(args, "expected_efe_file", None),
+            getattr(args, "expected_efe_json", None),
+        )
+        target = _load_json_input(getattr(args, "target_file", None), getattr(args, "target_json", None))
+        payload = run_desktop_operate(
+            ROOT,
+            rail=getattr(args, "rail", None) or "lab",
+            action_type=str(getattr(args, "action_type") or ""),
+            objective=str(getattr(args, "objective") or ""),
+            expected_efe_desktop=expected_efe_desktop if isinstance(expected_efe_desktop, dict) else {},
+            target=target if isinstance(target, dict) else None,
+            text=getattr(args, "text", None),
+            hotkeys=list(getattr(args, "hotkey", None) or []),
+            app=getattr(args, "app", None),
+            screenshot_path=getattr(args, "screenshot", None),
+        )
+    except Exception as exc:
+        print(f"desktop operate falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if str(payload.get("result") or "") == "ok" else 2
+
+
+def cmd_desktop_operate_demo(args: argparse.Namespace) -> int:
+    if run_desktop_operate_demo is None:
+        print("desktop operate-demo no disponible (módulo no importable).", file=sys.stderr)
+        return 3
+    try:
+        payload = run_desktop_operate_demo(
+            ROOT,
+            rail=getattr(args, "rail", None) or "lab",
+        )
+    except Exception as exc:
+        print(f"desktop operate-demo falló: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if bool(payload.get("ok")) else 2
+
+
 def cmd_lab_web(args: argparse.Namespace) -> int:
     try:
         from agency.lab_web import run_lab_web
@@ -8492,6 +8642,91 @@ def main(argv=None) -> int:
     p_desktop_snap.add_argument("--mission-id", help="Mission id opcional.")
     p_desktop_snap.add_argument("--job-id", help="Job id opcional.")
     p_desktop_snap.set_defaults(func=cmd_desktop_snap)
+    p_desktop_scout = desktop_sub.add_parser(
+        "scout",
+        help="Observa un screenshot LAB y propone affordances/riesgos sin actuar.",
+    )
+    p_desktop_scout.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_desktop_scout.add_argument("--screenshot", required=True, help="Path del screenshot a inspeccionar.")
+    p_desktop_scout.add_argument("--objective", required=True, help="Objetivo corto a contrastar contra el desktop.")
+    p_desktop_scout.add_argument("--context", help="Contexto corto opcional.")
+    p_desktop_scout.add_argument("--strategy-file", help="JSON opcional con estrategia candidata.")
+    p_desktop_scout.add_argument("--strategy-json", help="JSON inline opcional con estrategia candidata.")
+    p_desktop_scout.add_argument("--metadata-file", help="JSON opcional con metadata visual.")
+    p_desktop_scout.add_argument("--metadata-json", help="JSON inline opcional con metadata visual.")
+    p_desktop_scout.set_defaults(func=cmd_desktop_scout)
+    p_desktop_arbiter = desktop_sub.add_parser(
+        "arbiter",
+        help="Valida estrategia/EFE visual sobre un screenshot LAB.",
+    )
+    p_desktop_arbiter.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_desktop_arbiter.add_argument("--mode", choices=["pre", "post"], default="pre", help="Modo del arbitraje.")
+    p_desktop_arbiter.add_argument("--screenshot", required=True, help="Path del screenshot observado.")
+    p_desktop_arbiter.add_argument("--objective", required=True, help="Objetivo corto de la validación.")
+    p_desktop_arbiter.add_argument("--strategy-file", help="JSON opcional con estrategia candidata.")
+    p_desktop_arbiter.add_argument("--strategy-json", help="JSON inline opcional con estrategia candidata.")
+    p_desktop_arbiter.add_argument("--expected-efe-file", help="JSON opcional con expected_efe_desktop.")
+    p_desktop_arbiter.add_argument("--expected-efe-json", help="JSON inline con expected_efe_desktop.")
+    p_desktop_arbiter.add_argument("--metadata-file", help="JSON opcional con metadata visual.")
+    p_desktop_arbiter.add_argument("--metadata-json", help="JSON inline opcional con metadata visual.")
+    p_desktop_arbiter.set_defaults(func=cmd_desktop_arbiter)
+    p_desktop_compile = desktop_sub.add_parser(
+        "compile",
+        help="Cristaliza artifacts de scout/arbiter en una receta LAB reutilizable.",
+    )
+    p_desktop_compile.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_desktop_compile.add_argument("--scout-artifact", required=True, help="Artifact JSON de desktop scout.")
+    p_desktop_compile.add_argument(
+        "--arbiter-artifact",
+        action="append",
+        required=True,
+        help="Artifact JSON de desktop arbiter (repetible).",
+    )
+    p_desktop_compile.add_argument("--context-file", help="JSON opcional con contexto de compilación.")
+    p_desktop_compile.add_argument("--context-json", help="JSON inline opcional con contexto de compilación.")
+    p_desktop_compile.set_defaults(func=cmd_desktop_compile)
+    p_desktop_demo = desktop_sub.add_parser(
+        "demo",
+        help="Ejecuta un flujo demo scout -> arbiter -> compiler sobre fixture o screenshot dado.",
+    )
+    p_desktop_demo.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_desktop_demo.add_argument("--screenshot", help="Path opcional de screenshot; si falta, usa fixture local.")
+    p_desktop_demo.set_defaults(func=cmd_desktop_demo)
+    p_desktop_operate = desktop_sub.add_parser(
+        "operate",
+        help="Ejecuta una acción LAB allowlisted con PREPARE -> APPLY -> VERIFY -> UNDO_INFO.",
+    )
+    p_desktop_operate.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_desktop_operate.add_argument(
+        "--action-type",
+        required=True,
+        choices=[
+            "click_coordinates",
+            "click_named_target",
+            "type_text",
+            "safe_hotkey",
+            "launch_test_app",
+            "focus_window",
+            "close_test_app",
+        ],
+        help="Tipo de acción allowlisted.",
+    )
+    p_desktop_operate.add_argument("--objective", required=True, help="Objetivo corto de la operación.")
+    p_desktop_operate.add_argument("--expected-efe-file", help="JSON con expected_efe_desktop.")
+    p_desktop_operate.add_argument("--expected-efe-json", help="JSON inline con expected_efe_desktop.")
+    p_desktop_operate.add_argument("--target-file", help="JSON con target/resolución de la acción.")
+    p_desktop_operate.add_argument("--target-json", help="JSON inline con target/resolución de la acción.")
+    p_desktop_operate.add_argument("--text", help="Texto a escribir para type_text.")
+    p_desktop_operate.add_argument("--hotkey", action="append", help="Tecla allowlisted para safe_hotkey (repetible).")
+    p_desktop_operate.add_argument("--app", help="App de prueba allowlisted para launch/close.")
+    p_desktop_operate.add_argument("--screenshot", help="Screenshot previo opcional; si falta se captura antes de operar.")
+    p_desktop_operate.set_defaults(func=cmd_desktop_operate)
+    p_desktop_operate_demo = desktop_sub.add_parser(
+        "operate-demo",
+        help="Demo de actuación LAB real y segura sobre app de prueba allowlisted.",
+    )
+    p_desktop_operate_demo.add_argument("--rail", choices=["lab", "prod"], default="lab", help="Rail objetivo.")
+    p_desktop_operate_demo.set_defaults(func=cmd_desktop_operate_demo)
 
     p_doctor = sub.add_parser("doctor", help="Diagnósticos operativos.")
     doctor_sub = p_doctor.add_subparsers(dest="doctor_cmd", required=True)
