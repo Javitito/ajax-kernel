@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agency.close_editor_safe import close_editor_safe
+from agency.desktop_operation_specs import resolve_operation_contract
 from agency.desktop_roles import _build_lab_gate as build_desktop_lab_gate
 from agency.desktop_roles import run_desktop_arbiter, run_desktop_scout
 from agency.lab_snap import capture_lab_snapshot
@@ -258,59 +259,6 @@ def _normalize_action_request(
     return None, "action_not_allowlisted"
 
 
-def _build_undo_info(action: Dict[str, Any]) -> Dict[str, Any]:
-    action_type = str(action.get("action_type") or "")
-    target = _as_dict(action.get("target"))
-    if action_type == "launch_test_app":
-        return {
-            "possible": True,
-            "suggested_steps": [
-                "Focus the test app window.",
-                "Close it without saving.",
-                "Re-run desktop scout before any further actuation.",
-            ],
-        }
-    if action_type == "type_text":
-        return {
-            "possible": True,
-            "suggested_steps": [
-                "If the focused field is still active, send Ctrl+Z where supported.",
-                "If the text was typed into Notepad, close without saving.",
-                "Capture a fresh screenshot before retrying another action.",
-            ],
-        }
-    if action_type == "safe_hotkey":
-        return {
-            "possible": True,
-            "suggested_steps": [
-                "Recapture the desktop state.",
-                "If focus moved unexpectedly, re-focus the intended test window.",
-                "Do not chain another hotkey until VERIFY is explicit.",
-            ],
-        }
-    if action_type in {"click_coordinates", "click_named_target"}:
-        return {
-            "possible": False,
-            "suggested_steps": [
-                "Recapture the desktop state immediately.",
-                "If a modal opened, dismiss it with a safe hotkey only after a fresh scout/arbiter pass.",
-            ],
-        }
-    if action_type == "close_test_app":
-        process = str(target.get("process") or "notepad.exe")
-        return {
-            "possible": True,
-            "suggested_steps": [
-                f"Re-launch {process} if the LAB test needs to continue.",
-                "Rebuild focus and expected EFE before typing again.",
-            ],
-        }
-    return {
-        "possible": False,
-        "suggested_steps": ["Review the operation artifact before attempting a manual rollback."],
-    }
-
-
 def _derive_pre_verdict(pre_arbiter: Dict[str, Any]) -> str:
     if not bool(pre_arbiter.get("ok")):
         return "fail"
@@ -397,6 +345,9 @@ def _write_operation_artifact(root_dir: Path, payload: Dict[str, Any], *, ts: Op
         "anchor_receipt_path": payload.get("anchor_receipt_path"),
         "source_artifacts": payload.get("source_artifacts") or [],
         "action_type": payload.get("action_type"),
+        "operation_class": payload.get("operation_class"),
+        "verify_spec_name": _as_dict(_as_dict(payload.get("prepare")).get("verify_spec")).get("name"),
+        "undo_spec_name": _as_dict(payload.get("undo_info")).get("name"),
         "post_verdict": _as_dict(payload.get("verify")).get("post_verdict"),
     }
     _safe_write_json(receipt_path, receipt)
@@ -428,20 +379,37 @@ def run_desktop_operate(
         hotkeys=hotkeys,
         app=app,
     )
+    normalized_target = _as_dict((normalized_action or {}).get("target")) or _as_dict(target)
+    normalized_text = str((normalized_action or {}).get("text") or text or "").strip() or None
+    normalized_hotkeys = list((normalized_action or {}).get("keys") or (hotkeys or []))
+    resolved_contract = resolve_operation_contract(
+        action_type=str(action_type or "").strip().lower(),
+        target=normalized_target,
+        text=normalized_text,
+        hotkeys=normalized_hotkeys,
+        app=app or str(normalized_target.get("process") or "").strip() or None,
+        expected_efe_desktop=expected_efe_desktop if isinstance(expected_efe_desktop, dict) else None,
+    )
+    resolved_expected_efe = _as_dict(resolved_contract.get("expected_efe_desktop"))
+    verify_spec = _as_dict(resolved_contract.get("verify_spec"))
+    undo_info = _as_dict(resolved_contract.get("undo_info"))
     payload: Dict[str, Any] = {
         "schema": OPERATION_SCHEMA,
         "role": "desktop_operator_lab",
         "rail": rail_n,
         "action_type": str(action_type or "").strip().lower(),
+        "operation_class": resolved_contract.get("operation_class"),
         "prepare": {
             "screenshot_before": screenshot_path,
             "pre_verdict": "fail",
             "visual_risks": [],
-            "expected_efe_desktop": expected_efe_desktop if isinstance(expected_efe_desktop, dict) else {},
+            "expected_efe_desktop": resolved_expected_efe,
+            "verify_spec": verify_spec,
+            "contract_source": resolved_contract.get("contract_source"),
         },
         "apply": {"executed": False, "action_detail": {}},
         "verify": {"screenshot_after": None, "post_verdict": "fail", "mismatches": []},
-        "undo_info": {"possible": False, "suggested_steps": []},
+        "undo_info": undo_info or {"possible": False, "suggested_steps": []},
         "result": "fail_closed",
         "reason_code": "pending",
         "next_hint": "",
@@ -454,7 +422,7 @@ def run_desktop_operate(
         payload["next_hint"] = _reason_hint("lab_only_command")
         return _write_operation_artifact(root, payload)
 
-    if not isinstance(expected_efe_desktop, dict) or not expected_efe_desktop:
+    if not resolved_expected_efe:
         payload["reason_code"] = "missing_expected_efe_desktop"
         payload["next_hint"] = _reason_hint("missing_expected_efe_desktop")
         return _write_operation_artifact(root, payload)
@@ -497,7 +465,9 @@ def run_desktop_operate(
     strategy = {
         "action_type": normalized_action["action_type"],
         "target": normalized_action.get("target") or {},
-        "expected_efe_desktop": expected_efe_desktop,
+        "expected_efe_desktop": resolved_expected_efe,
+        "operation_class": resolved_contract.get("operation_class"),
+        "verify_spec": verify_spec,
     }
     if "text" in normalized_action:
         strategy["text_preview"] = str(normalized_action["text"])[:80]
@@ -528,11 +498,12 @@ def run_desktop_operate(
     payload["prepare"]["visual_risks"] = visual_risks
     pre_verdict = _derive_pre_verdict(pre_arbiter)
     payload["prepare"]["pre_verdict"] = pre_verdict
-    payload["undo_info"] = _build_undo_info(normalized_action)
     payload["prepare"]["plan"] = {
         "action_type": normalized_action["action_type"],
+        "operation_class": resolved_contract.get("operation_class"),
         "target": normalized_action.get("target") or {},
-        "expected_efe_desktop": expected_efe_desktop,
+        "expected_efe_desktop": resolved_expected_efe,
+        "verify_spec": verify_spec,
         "visual_risks": visual_risks,
         "undo_info": payload["undo_info"],
     }
@@ -561,7 +532,7 @@ def run_desktop_operate(
     payload["verify"]["screenshot_after"] = screenshot_after
     runtime_metadata = _metadata_from_runtime(
         driver,
-        expected_efe_desktop=expected_efe_desktop,
+        expected_efe_desktop=resolved_expected_efe,
         text_probe=str(normalized_action.get("text") or "") if normalized_action["action_type"] == "type_text" else None,
     )
     post_arbiter = run_desktop_arbiter(
@@ -571,7 +542,7 @@ def run_desktop_operate(
         screenshot_path=screenshot_after,
         objective=objective,
         strategy=strategy,
-        expected_efe_desktop=expected_efe_desktop,
+        expected_efe_desktop=resolved_expected_efe,
         metadata=runtime_metadata,
     )
     payload["source_artifacts"].append(post_arbiter.get("artifact_path"))

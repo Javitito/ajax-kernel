@@ -407,6 +407,12 @@ def _evaluate_expected_efe(expected_efe_desktop: Dict[str, Any], visual: Dict[st
         if not any(expected.lower() in seen for expected in expected_markers for seen in lowered_markers):
             mismatches.append("expected_visual_marker_missing")
 
+    expected_markers_absent = _as_text_list(expected_efe_desktop.get("visual_markers_absent"))
+    if expected_markers_absent:
+        lowered_markers = [str(item).lower() for item in markers]
+        if any(expected.lower() in seen for expected in expected_markers_absent for seen in lowered_markers):
+            mismatches.append("unexpected_visual_marker_present")
+
     expected_text = _as_text_list(expected_efe_desktop.get("visible_text_any"))
     if expected_text:
         lowered_text = [str(item).lower() for item in visible_text]

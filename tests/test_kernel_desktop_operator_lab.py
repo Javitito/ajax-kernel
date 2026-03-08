@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import agency.desktop_operation_specs as operation_specs
 import agency.desktop_operator_lab as operator_mod
 from agency.receipt_validator import validate_receipt
 
@@ -320,33 +321,64 @@ def test_operator_writes_operation_artifact(tmp_path: Path, monkeypatch) -> None
     assert written["role"] == "desktop_operator_lab"
 
 
-def test_operator_includes_expected_efe_desktop(tmp_path: Path, monkeypatch) -> None:
+def test_operator_consumes_specs_instead_of_hardcoded_contract(tmp_path: Path, monkeypatch) -> None:
     _patch_operator_success(monkeypatch, tmp_path)
-    expected = {"active_window_title_contains": "Notepad", "visual_markers_any": ["notepad.exe"]}
+    monkeypatch.setattr(
+        operator_mod,
+        "resolve_operation_contract",
+        lambda **kwargs: {
+            "operation_class": "open_app",
+            "expected_efe_desktop": {"active_window_title_contains": "SpecWindow", "visual_markers_any": ["spec.exe"]},
+            "verify_spec": {"name": "verify.synthetic.v0"},
+            "undo_info": {"name": "undo.synthetic.v0", "possible": True, "suggested_steps": ["synthetic undo"]},
+            "contract_source": "operation_class",
+        },
+        raising=True,
+    )
     payload = operator_mod.run_desktop_operate(
         tmp_path,
         rail="lab",
         action_type="launch_test_app",
         objective="Launch test app",
-        expected_efe_desktop=expected,
+        expected_efe_desktop={},
         app="notepad.exe",
         target={"process": "notepad.exe"},
     )
-    assert payload["prepare"]["expected_efe_desktop"] == expected
+    assert payload["operation_class"] == "open_app"
+    assert payload["prepare"]["expected_efe_desktop"]["active_window_title_contains"] == "SpecWindow"
+    assert payload["prepare"]["verify_spec"]["name"] == "verify.synthetic.v0"
+    assert payload["undo_info"]["name"] == "undo.synthetic.v0"
 
 
-def test_operator_includes_undo_info(tmp_path: Path, monkeypatch) -> None:
+def test_operator_includes_expected_efe_from_spec(tmp_path: Path, monkeypatch) -> None:
     _patch_operator_success(monkeypatch, tmp_path)
     payload = operator_mod.run_desktop_operate(
         tmp_path,
         rail="lab",
         action_type="launch_test_app",
         objective="Launch test app",
-        expected_efe_desktop={"active_window_title_contains": "Notepad", "visual_markers_any": ["notepad.exe"]},
+        expected_efe_desktop={},
         app="notepad.exe",
         target={"process": "notepad.exe"},
     )
-    assert "possible" in payload["undo_info"]
+    resolved = payload["prepare"]["expected_efe_desktop"]
+    assert resolved["active_window_title_contains"] == "notepad"
+    assert resolved["visual_markers_any"] == ["notepad.exe"]
+
+
+def test_operator_includes_undo_info_from_spec(tmp_path: Path, monkeypatch) -> None:
+    _patch_operator_success(monkeypatch, tmp_path)
+    payload = operator_mod.run_desktop_operate(
+        tmp_path,
+        rail="lab",
+        action_type="launch_test_app",
+        objective="Launch test app",
+        expected_efe_desktop={},
+        app="notepad.exe",
+        target={"process": "notepad.exe"},
+    )
+    assert payload["undo_info"]["name"] == operation_specs.UNDO_SPECS["open_app"]["name"]
+    assert payload["undo_info"]["possible"] is True
     assert isinstance(payload["undo_info"]["suggested_steps"], list)
 
 
