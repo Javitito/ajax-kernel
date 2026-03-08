@@ -231,6 +231,8 @@ def test_compiler_writes_artifact(tmp_path: Path, monkeypatch) -> None:
     assert artifact.exists()
     written = json.loads(artifact.read_text(encoding="utf-8"))
     assert written["role"] == "desktop_compiler"
+    assert written["verification_contract_version"] == "desktop_v1"
+    assert isinstance(written["verification_results"], list)
 
 
 def test_pre_verdict_shape(tmp_path: Path, monkeypatch) -> None:
@@ -249,10 +251,11 @@ def test_pre_verdict_shape(tmp_path: Path, monkeypatch) -> None:
 
     assert payload["mode"] == "pre"
     assert isinstance(payload["strategy_ok"], bool)
-    assert payload["post_action_verdict"] in {"pass", "fail", "uncertain"}
-    assert isinstance(payload["mismatches"], list)
+    assert payload["verification_result"]["verdict"] in {"pass", "fail", "uncertain"}
+    assert isinstance(payload["verification_result"]["mismatches"], list)
     assert isinstance(payload["visual_risks"], list)
     assert isinstance(payload["next_hint"], str)
+    assert payload["verify_input"]["verification_contract_version"] == "desktop_v1"
 
 
 def test_post_verdict_shape(tmp_path: Path, monkeypatch) -> None:
@@ -277,10 +280,11 @@ def test_post_verdict_shape(tmp_path: Path, monkeypatch) -> None:
 
     assert payload["mode"] == "post"
     assert isinstance(payload["strategy_ok"], bool)
-    assert payload["post_action_verdict"] in {"pass", "fail", "uncertain"}
-    assert isinstance(payload["mismatches"], list)
+    assert payload["verification_result"]["verdict"] in {"pass", "fail", "uncertain"}
+    assert isinstance(payload["verification_result"]["mismatches"], list)
     assert isinstance(payload["visual_risks"], list)
     assert isinstance(payload["next_hint"], str)
+    assert payload["verify_input"]["verification_contract_version"] == "desktop_v1"
 
 
 def test_no_constitution_files_touched_guard() -> None:
@@ -317,3 +321,49 @@ def test_desktop_demo_writes_audit_artifact(tmp_path: Path, monkeypatch) -> None
     assert artifact.exists()
     assert payload["schema"] == desktop_roles.DEMO_SCHEMA
     assert isinstance(payload["steps"], list)
+
+
+def test_compiler_uses_shared_verify_contract(tmp_path: Path, monkeypatch) -> None:
+    screenshot = _write_screenshot_fixture(tmp_path)
+    monkeypatch.setattr(desktop_roles, "validate_expected_session", _fake_session_ok, raising=True)
+    monkeypatch.setattr(desktop_roles, "run_anchor_preflight", _fake_anchor_ok, raising=True)
+
+    scout = desktop_roles.run_desktop_scout(
+        tmp_path,
+        rail="lab",
+        screenshot_path=str(screenshot),
+        objective="Inspect fixture desktop",
+        strategy={"action_type": "focus_window"},
+    )
+    arbiter = desktop_roles.run_desktop_arbiter(
+        tmp_path,
+        rail="lab",
+        mode="post",
+        screenshot_path=str(screenshot),
+        objective="Validate fixture desktop",
+        strategy={"action_type": "focus_window", "target": {"title_contains": "fixture", "focus_target": "search_box"}},
+        expected_efe_desktop={
+            "active_window_title_contains": "fixture",
+            "focus_target_contains": "search",
+            "affordances_any": ["results_panel"],
+            "dialogs_absent": True,
+        },
+    )
+
+    payload = desktop_roles.run_desktop_compiler(
+        tmp_path,
+        rail="lab",
+        scout_artifact_path=str(scout["artifact_path"]),
+        arbiter_artifact_paths=[str(arbiter["artifact_path"])],
+    )
+    assert payload["verification_results"][0]["verification_contract_version"] == "desktop_v1"
+
+
+def test_verify_demo_registered_or_equivalent() -> None:
+    proc = subprocess.run(
+        [sys.executable, "bin/ajaxctl", "desktop", "verify-demo", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    assert "--rail" in proc.stdout

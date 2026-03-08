@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from agency.anchor_preflight import run_anchor_preflight
+from agency.desktop_operation_specs import evaluate_desktop_verify_input, resolve_operation_contract
+from agency.desktop_verify_contract import (
+    DESKTOP_VERIFICATION_CONTRACT_VERSION,
+    build_desktop_mismatch,
+    build_desktop_verification_result,
+    build_desktop_verify_input,
+    normalize_desktop_mismatches,
+    normalize_desktop_verification_result,
+)
 from agency.lab_session_anchor import validate_expected_session
 
 
@@ -14,6 +23,7 @@ SCOUT_SCHEMA = "ajax.desktop.scout.v1"
 ARBITER_SCHEMA = "ajax.desktop.arbiter.v1"
 COMPILER_SCHEMA = "ajax.desktop.compiler.v1"
 DEMO_SCHEMA = "ajax.desktop.demo.v1"
+VERIFY_DEMO_SCHEMA = "ajax.desktop.verify_demo.v1"
 ROLE_RECEIPT_SCHEMA = "ajax.desktop.role_receipt.v1"
 
 
@@ -50,6 +60,10 @@ def _normalize_rail(raw: Any) -> str:
 def _normalize_mode(raw: Any) -> str:
     value = str(raw or "pre").strip().lower()
     return "post" if value == "post" else "pre"
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _as_text_list(value: Any) -> list[str]:
@@ -99,6 +113,41 @@ def _load_visual_metadata(screenshot_path: Path, metadata: Optional[Dict[str, An
         merged.update(metadata)
         return merged
     return sidecar
+
+
+def _arbiter_verify_spec(verify_spec: Dict[str, Any]) -> Dict[str, Any]:
+    spec = dict(_as_dict(verify_spec))
+    required = _as_text_list(spec.get("evidence_required"))
+    spec["evidence_required"] = [item for item in required if item != "desktop_arbiter_post"]
+    return spec
+
+
+def _resolve_strategy_contract(strategy: Any, expected_efe_desktop: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    strategy_n = _as_dict(strategy)
+    action_type = str(strategy_n.get("action_type") or "").strip().lower()
+    target = _as_dict(strategy_n.get("target"))
+    app = str(strategy_n.get("app") or target.get("process") or "").strip() or None
+    text = str(strategy_n.get("text") or strategy_n.get("text_preview") or "").strip() or None
+    hotkeys = strategy_n.get("keys")
+    explicit_expected = _as_dict(expected_efe_desktop) or _as_dict(strategy_n.get("expected_efe_desktop"))
+    operation_class = str(strategy_n.get("operation_class") or "").strip().lower() or None
+    if not action_type and not operation_class:
+        return {
+            "operation_class": None,
+            "context": {"action_type": "", "process": app or ""},
+            "expected_efe_desktop": explicit_expected,
+            "verify_spec": {},
+            "contract_source": "strategy_only",
+        }
+    return resolve_operation_contract(
+        action_type=action_type,
+        target=target,
+        text=text,
+        hotkeys=hotkeys,
+        app=app,
+        expected_efe_desktop=explicit_expected,
+        operation_class=operation_class,
+    )
 
 
 def _reason_hint(reason_code: str, *, role: str) -> str:
@@ -274,7 +323,15 @@ def _write_role_payload(
         "mode": payload.get("mode"),
         "anchor_receipt_path": payload.get("anchor_receipt_path"),
         "source_artifacts": payload.get("source_artifacts") or [],
+        "verification_contract_version": payload.get("verification_contract_version"),
     }
+    if isinstance(payload.get("verify_input"), dict):
+        receipt["verify_input"] = payload.get("verify_input")
+    if isinstance(payload.get("verification_result"), dict):
+        receipt["verification_result"] = payload.get("verification_result")
+        receipt["verdict"] = _as_dict(payload.get("verification_result")).get("verdict")
+    if isinstance(payload.get("verification_results"), list):
+        receipt["verification_results"] = payload.get("verification_results")
     _safe_write_json(receipt_path, receipt)
 
     payload["receipt_path"] = str(receipt_path)
@@ -422,6 +479,25 @@ def _evaluate_expected_efe(expected_efe_desktop: Dict[str, Any], visual: Dict[st
     return mismatches
 
 
+def _build_verify_visual_state(
+    screenshot: Path,
+    visual: Dict[str, Any],
+    metadata: Dict[str, Any],
+    *,
+    verdict: str = "",
+) -> Dict[str, Any]:
+    return {
+        "active_window_title": str(visual.get("active_window_title") or "").strip(),
+        "focus_target": str(visual.get("focus_target") or "").strip(),
+        "dialogs": _as_text_list(visual.get("dialogs")),
+        "observed_affordances": _as_text_list(visual.get("observed_affordances")),
+        "markers": _as_text_list(visual.get("markers")),
+        "metadata": {"visible_text": _as_text_list(_as_dict(metadata).get("visible_text"))},
+        "post_action_verdict": str(verdict or "").strip().lower(),
+        "screenshot_path": str(screenshot),
+    }
+
+
 def run_desktop_arbiter(
     root_dir: Path,
     *,
@@ -450,9 +526,10 @@ def run_desktop_arbiter(
         "expected_efe_desktop": expected_efe_desktop if isinstance(expected_efe_desktop, dict) else {},
         "screenshot_path": str(screenshot),
         "strategy_ok": False,
-        "post_action_verdict": "uncertain",
-        "mismatches": [],
         "visual_risks": [],
+        "verify_input": {},
+        "verification_result": {},
+        "verification_contract_version": DESKTOP_VERIFICATION_CONTRACT_VERSION,
         "next_hint": "",
         "anchor_receipt_path": gate.get("anchor_receipt_path"),
         "lab_gate": gate,
@@ -473,7 +550,9 @@ def run_desktop_arbiter(
         payload["next_hint"] = _reason_hint("missing_strategy", role="desktop_arbiter")
         return _write_role_payload(root, role="desktop_arbiter", payload=payload)
 
-    if mode_n == "post" and not isinstance(expected_efe_desktop, dict):
+    contract = _resolve_strategy_contract(strategy, expected_efe_desktop if isinstance(expected_efe_desktop, dict) else None)
+    resolved_expected_efe = _as_dict(contract.get("expected_efe_desktop"))
+    if mode_n == "post" and not resolved_expected_efe:
         payload["reason_code"] = "missing_expected_efe_desktop"
         payload["next_hint"] = _reason_hint("missing_expected_efe_desktop", role="desktop_arbiter")
         return _write_role_payload(root, role="desktop_arbiter", payload=payload)
@@ -486,44 +565,118 @@ def run_desktop_arbiter(
         metadata=meta,
     )
     risks = _dedupe([*visual["visual_risks"], *_strategy_risks(strategy)])
-    mismatches: list[str] = []
+    mismatches: list[Dict[str, Any]] = []
     strategy_ok = True
-    verdict = "uncertain"
+    verify_spec = _arbiter_verify_spec(_as_dict(contract.get("verify_spec")))
+    provisional_verdict = "uncertain"
+
+    if any(item.startswith("strategy_mentions:") for item in risks):
+        strategy_ok = False
+        mismatches.append(
+            build_desktop_mismatch(
+                "strategy_candidate",
+                expected="non-destructive LAB-only strategy",
+                observed=_strategy_text(strategy),
+                severity="high",
+                note="The strategy mentions destructive or secretive terms and cannot be allowed in LAB.",
+            )
+        )
+    elif any(item.startswith("dialog_present:") for item in risks) and "dialog" not in _strategy_text(strategy).lower():
+        strategy_ok = False
+        mismatches.append(
+            build_desktop_mismatch(
+                "strategy_candidate",
+                expected="dialog-aware strategy",
+                observed=_strategy_text(strategy),
+                severity="high",
+                note="A visible dialog was not accounted for by the proposed strategy.",
+            )
+        )
+    elif visual["observed_affordances"] == ["screenshot_present"]:
+        strategy_ok = False
+        mismatches.append(
+            build_desktop_mismatch(
+                "observed_affordances",
+                expected="usable desktop affordances",
+                observed=visual["observed_affordances"],
+                severity="medium",
+                note="The screenshot exposed too little visual structure to validate the strategy safely.",
+            )
+        )
 
     if mode_n == "pre":
-        if any(item.startswith("strategy_mentions:") for item in risks):
-            strategy_ok = False
-            mismatches.append("strategy_contains_destructive_or_secretive_terms")
-        elif any(item.startswith("dialog_present:") for item in risks) and "dialog" not in _strategy_text(strategy).lower():
-            strategy_ok = False
-            mismatches.append("strategy_does_not_account_for_visible_dialog")
-        elif visual["observed_affordances"] == ["screenshot_present"]:
-            strategy_ok = False
-            mismatches.append("insufficient_visual_affordances_for_strategy_validation")
-        verdict = "uncertain"
-    else:
-        strategy_ok = not any(item.startswith("strategy_mentions:") for item in risks)
-        mismatches = _evaluate_expected_efe(expected_efe_desktop or {}, visual)
-        if mismatches:
-            verdict = "fail"
-        elif visual["observed_affordances"]:
-            verdict = "pass"
+        if mismatches and mismatches[0]["field"] == "observed_affordances":
+            verification_result = build_desktop_verification_result(
+                verdict="uncertain",
+                mismatches=mismatches,
+                reason_code="strategy_validation_uncertain",
+                next_hint="Capture a richer screenshot before validating the desktop strategy.",
+                confidence="low",
+            )
+        elif mismatches:
+            verification_result = build_desktop_verification_result(
+                verdict="fail",
+                mismatches=mismatches,
+                reason_code="strategy_validation_failed",
+                next_hint="Revise the desktop strategy before any LAB action.",
+                confidence="high",
+            )
         else:
-            verdict = "uncertain"
+            verification_result = build_desktop_verification_result(
+                verdict="pass",
+                mismatches=[],
+                reason_code="ok",
+                next_hint=visual["candidate_paths"][0] if visual["candidate_paths"] else "",
+                confidence="high",
+            )
+    else:
+        if mismatches:
+            verification_result = build_desktop_verification_result(
+                verdict="fail",
+                mismatches=mismatches,
+                reason_code="strategy_validation_failed",
+                next_hint="Revise the desktop strategy before any LAB action.",
+                confidence="high",
+            )
+        else:
+            if visual["observed_affordances"]:
+                provisional_verdict = "pass"
+            verify_input = build_desktop_verify_input(
+                operation_class=contract.get("operation_class"),
+                expected_efe_desktop=resolved_expected_efe,
+                before_state=_build_verify_visual_state(screenshot, visual, meta, verdict=provisional_verdict),
+                after_state=_build_verify_visual_state(screenshot, visual, meta, verdict=provisional_verdict),
+                screenshot_before=str(screenshot),
+                screenshot_after=str(screenshot),
+                arbiter_context={"mode": mode_n, "strategy_candidate": strategy},
+                runtime_metadata=meta,
+                verify_spec=verify_spec,
+            )
+            verify_input["required_evidence"] = _as_text_list(verify_spec.get("evidence_required"))
+            verification_result = evaluate_desktop_verify_input(verify_input)
+            payload["verify_input"] = verify_input
 
     payload.update(
         {
             "ok": True,
-            "reason_code": "ok",
+            "reason_code": str(verification_result.get("reason_code") or "ok"),
             "strategy_ok": bool(strategy_ok),
-            "post_action_verdict": verdict,
-            "mismatches": mismatches,
+            "expected_efe_desktop": resolved_expected_efe if mode_n == "post" else _as_dict(contract.get("expected_efe_desktop")),
             "visual_risks": risks,
-            "next_hint": (
-                mismatches[0]
-                if mismatches
-                else (visual["candidate_paths"][0] if visual["candidate_paths"] else "")
+            "verification_result": verification_result,
+            "verify_input": payload.get("verify_input")
+            or build_desktop_verify_input(
+                operation_class=contract.get("operation_class"),
+                expected_efe_desktop=_as_dict(contract.get("expected_efe_desktop")),
+                before_state=_build_verify_visual_state(screenshot, visual, meta, verdict=str(verification_result["verdict"])),
+                after_state=_build_verify_visual_state(screenshot, visual, meta, verdict=str(verification_result["verdict"])),
+                screenshot_before=str(screenshot),
+                screenshot_after=str(screenshot),
+                arbiter_context={"mode": mode_n, "strategy_candidate": strategy},
+                runtime_metadata=meta,
+                verify_spec=verify_spec,
             ),
+            "next_hint": str(verification_result.get("next_hint") or (visual["candidate_paths"][0] if visual["candidate_paths"] else "")),
             "metadata": meta,
             "observed_affordances": visual["observed_affordances"],
             "markers": visual["markers"],
@@ -572,6 +725,9 @@ def run_desktop_compiler(
         "anti_patterns": [],
         "reusable_guards": [],
         "crystallization_candidate": False,
+        "verification_contract_version": DESKTOP_VERIFICATION_CONTRACT_VERSION,
+        "verification_inputs": [],
+        "verification_results": [],
         "next_hint": "",
         "source_artifacts": source_artifacts,
         "context": context if isinstance(context, dict) else {},
@@ -621,12 +777,29 @@ def run_desktop_compiler(
     if not recipe_name:
         recipe_name = _slug(objective, fallback="desktop_lab_recipe")
 
+    verification_inputs = [
+        _as_dict(item.get("verify_input"))
+        for item in loaded_arbiters
+        if isinstance(item.get("verify_input"), dict)
+    ]
+    verification_results = [
+        normalize_desktop_verification_result(item.get("verification_result"))
+        for item in loaded_arbiters
+        if isinstance(item.get("verification_result"), dict)
+    ]
     post_candidates = [
         item for item in loaded_arbiters
-        if _normalize_mode(item.get("mode")) == "post" and isinstance(item.get("expected_efe_desktop"), dict)
+        if _normalize_mode(item.get("mode")) == "post"
+        and (
+            isinstance(item.get("expected_efe_desktop"), dict)
+            or isinstance(_as_dict(item.get("verify_input")).get("expected_efe_desktop"), dict)
+        )
     ]
     expected_efe = (
-        dict(post_candidates[0]["expected_efe_desktop"])
+        dict(
+            _as_dict(_as_dict(post_candidates[0].get("verify_input")).get("expected_efe_desktop"))
+            or _as_dict(post_candidates[0].get("expected_efe_desktop"))
+        )
         if post_candidates
         else _derive_expected_efe_from_scout(scout_artifact)
     )
@@ -635,7 +808,12 @@ def run_desktop_compiler(
     anti_patterns.extend(_as_text_list(scout_artifact.get("visual_risks")))
     for arbiter in loaded_arbiters:
         anti_patterns.extend(_as_text_list(arbiter.get("visual_risks")))
-        anti_patterns.extend(_as_text_list(arbiter.get("mismatches")))
+        verification_result = normalize_desktop_verification_result(arbiter.get("verification_result"))
+        anti_patterns.extend(
+            f"verification_mismatch:{item['field']}"
+            for item in verification_result.get("mismatches", [])
+            if isinstance(item, dict) and str(item.get("field") or "").strip()
+        )
 
     reusable_guards = [
         "require_lab_anchor_receipt",
@@ -648,8 +826,8 @@ def run_desktop_compiler(
         reusable_guards.append("assert_expected_affordance_before_recipe_step")
 
     crystallization_candidate = any(
-        str(item.get("post_action_verdict") or "").strip().lower() in {"pass", "uncertain"}
-        for item in loaded_arbiters
+        str(item.get("verdict") or "").strip().lower() in {"pass", "uncertain"}
+        for item in verification_results
     )
 
     payload.update(
@@ -661,6 +839,8 @@ def run_desktop_compiler(
             "anti_patterns": _dedupe(anti_patterns),
             "reusable_guards": _dedupe(reusable_guards),
             "crystallization_candidate": bool(crystallization_candidate),
+            "verification_inputs": verification_inputs,
+            "verification_results": verification_results,
             "next_hint": "Review the candidate before promoting it into a wider LAB recipe.",
         }
     )
@@ -763,6 +943,89 @@ def run_desktop_demo(
         audit["reason_code"] = str(first.get("reason_code") or "desktop_demo_failed")
         audit["next_hint"] = str(first.get("next_hint") or "")
     audit_path = root / "artifacts" / "audits" / f"desktop_lab_demo_{_ts_label(now)}.json"
+    _safe_write_json(audit_path, audit)
+    audit["artifact_path"] = str(audit_path)
+    _safe_write_json(audit_path, audit)
+    return audit
+
+
+def run_desktop_verify_demo(
+    root_dir: Path,
+    *,
+    rail: str,
+    screenshot_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    root = Path(root_dir)
+    now = time.time()
+    rail_n = _normalize_rail(rail)
+    screenshot = Path(screenshot_path) if screenshot_path else _write_demo_fixture_screenshot(root, ts=now)
+    meta = _load_visual_metadata(screenshot, None)
+    contract = resolve_operation_contract(
+        action_type="focus_window",
+        target={"title_contains": "fixture window", "focus_target": "search_box"},
+        expected_efe_desktop={
+            "active_window_title_contains": "fixture",
+            "focus_target_contains": "search",
+            "affordances_any": ["results_panel"],
+            "dialogs_absent": True,
+        },
+        operation_class="focus_window",
+    )
+    verify_input = build_desktop_verify_input(
+        operation_class=contract.get("operation_class"),
+        expected_efe_desktop=_as_dict(contract.get("expected_efe_desktop")),
+        before_state=_build_verify_visual_state(
+            screenshot,
+            {
+                "active_window_title": str(meta.get("active_window_title") or ""),
+                "focus_target": str(meta.get("focus_target") or ""),
+                "dialogs": _as_text_list(meta.get("dialogs")),
+                "observed_affordances": _dedupe(
+                    [f"visible_affordance:{item}" for item in _as_text_list(meta.get("ui_affordances"))]
+                    + [f"visual_marker:{item}" for item in _as_text_list(meta.get("visual_markers"))]
+                ),
+                "markers": _as_text_list(meta.get("visual_markers")),
+            },
+            meta,
+            verdict="pass",
+        ),
+        after_state=_build_verify_visual_state(
+            screenshot,
+            {
+                "active_window_title": str(meta.get("active_window_title") or ""),
+                "focus_target": str(meta.get("focus_target") or ""),
+                "dialogs": _as_text_list(meta.get("dialogs")),
+                "observed_affordances": _dedupe(
+                    [f"visible_affordance:{item}" for item in _as_text_list(meta.get("ui_affordances"))]
+                    + [f"visual_marker:{item}" for item in _as_text_list(meta.get("visual_markers"))]
+                ),
+                "markers": _as_text_list(meta.get("visual_markers")),
+            },
+            meta,
+            verdict="pass",
+        ),
+        screenshot_before=str(screenshot),
+        screenshot_after=str(screenshot),
+        arbiter_context={"mode": "post", "demo": True},
+        runtime_metadata=meta,
+        verify_spec=_arbiter_verify_spec(_as_dict(contract.get("verify_spec"))),
+    )
+    verify_input["required_evidence"] = _as_text_list(_as_dict(contract.get("verify_spec")).get("evidence_required"))
+    verify_input["required_evidence"] = [item for item in verify_input["required_evidence"] if item != "desktop_arbiter_post"]
+    verification_result = evaluate_desktop_verify_input(verify_input)
+    audit = {
+        "schema": VERIFY_DEMO_SCHEMA,
+        "ts_utc": _utc_now(now),
+        "rail": rail_n,
+        "ok": str(verification_result.get("verdict") or "") == "pass",
+        "verification_contract_version": DESKTOP_VERIFICATION_CONTRACT_VERSION,
+        "fixture_screenshot_path": str(screenshot),
+        "verify_input": verify_input,
+        "verification_result": verification_result,
+        "reason_code": str(verification_result.get("reason_code") or "verify_demo_failed"),
+        "next_hint": str(verification_result.get("next_hint") or ""),
+    }
+    audit_path = root / "artifacts" / "audits" / f"desktop_verify_demo_{_ts_label(now)}.json"
     _safe_write_json(audit_path, audit)
     audit["artifact_path"] = str(audit_path)
     _safe_write_json(audit_path, audit)

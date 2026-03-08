@@ -3,6 +3,13 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, Optional
 
+from agency.desktop_verify_contract import (
+    build_desktop_mismatch,
+    build_desktop_verification_result,
+    build_desktop_verify_input,
+    normalize_desktop_mismatches,
+)
+
 
 OPERATION_CLASSES: Dict[str, Dict[str, Any]] = {
     "open_app": {
@@ -462,6 +469,7 @@ def _extract_visual_state(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     runtime = _as_dict(raw.get("runtime_metadata"))
     metadata = _as_dict(raw.get("metadata"))
     post_arbiter = _as_dict(raw.get("post_arbiter"))
+    post_result = _as_dict(post_arbiter.get("verification_result"))
     dialogs = _as_text_list(raw.get("dialogs") or metadata.get("dialogs"))
     affordances = _as_text_list(raw.get("observed_affordances") or metadata.get("observed_affordances") or metadata.get("ui_affordances"))
     markers = _as_text_list(
@@ -483,8 +491,12 @@ def _extract_visual_state(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "observed_affordances": affordances,
         "markers": markers,
         "metadata": {"visible_text": visible_text},
-        "post_action_verdict": str(raw.get("post_action_verdict") or post_arbiter.get("post_action_verdict") or "").strip().lower(),
-        "post_action_mismatches": _as_text_list(raw.get("mismatches") or post_arbiter.get("mismatches")),
+        "post_action_verdict": str(
+            raw.get("post_action_verdict")
+            or post_result.get("verdict")
+            or post_arbiter.get("post_action_verdict")
+            or ""
+        ).strip().lower(),
         "screenshot_path": str(raw.get("screenshot_path") or raw.get("png_path") or "").strip(),
     }
 
@@ -498,8 +510,8 @@ def _expected_contains(actual: str, expected: Any) -> bool:
     return text in actual.lower()
 
 
-def _evaluate_expected_efe(expected_efe_desktop: Dict[str, Any], visual: Dict[str, Any]) -> list[str]:
-    mismatches: list[str] = []
+def _evaluate_expected_efe(expected_efe_desktop: Dict[str, Any], visual: Dict[str, Any]) -> list[Dict[str, Any]]:
+    mismatches: list[Dict[str, Any]] = []
     active_window = str(visual.get("active_window_title") or "")
     focus_target = str(visual.get("focus_target") or "")
     dialogs = visual.get("dialogs") if isinstance(visual.get("dialogs"), list) else []
@@ -509,43 +521,107 @@ def _evaluate_expected_efe(expected_efe_desktop: Dict[str, Any], visual: Dict[st
 
     expected_title = expected_efe_desktop.get("active_window_title_contains")
     if expected_title and not _expected_contains(active_window, expected_title):
-        mismatches.append("active_window_title_mismatch")
+        mismatches.append(
+            build_desktop_mismatch(
+                "active_window_title_contains",
+                expected=expected_title,
+                observed=active_window,
+                severity="high",
+                note="Foreground window title did not satisfy the expected title fragment.",
+            )
+        )
 
     expected_focus = expected_efe_desktop.get("focus_target_contains")
     if expected_focus and not _expected_contains(focus_target, expected_focus):
-        mismatches.append("focus_target_mismatch")
+        mismatches.append(
+            build_desktop_mismatch(
+                "focus_target_contains",
+                expected=expected_focus,
+                observed=focus_target,
+                severity="medium",
+                note="Focused desktop target did not match the expected focus target hint.",
+            )
+        )
 
     if bool(expected_efe_desktop.get("dialogs_absent")) and dialogs:
-        mismatches.append("dialogs_still_present")
+        mismatches.append(
+            build_desktop_mismatch(
+                "dialogs_absent",
+                expected=True,
+                observed=dialogs,
+                severity="high",
+                note="A blocking dialog is still visible after the operation.",
+            )
+        )
 
     expected_dialogs = _as_text_list(expected_efe_desktop.get("dialogs_present"))
     for item in expected_dialogs:
         if not any(item.lower() in seen.lower() for seen in dialogs):
-            mismatches.append(f"expected_dialog_missing:{item}")
+            mismatches.append(
+                build_desktop_mismatch(
+                    "dialogs_present",
+                    expected=item,
+                    observed=dialogs,
+                    severity="high",
+                    note="An expected dialog was not visible in the observed desktop state.",
+                )
+            )
 
     expected_affordances = _as_text_list(expected_efe_desktop.get("affordances_any"))
     if expected_affordances:
         lowered = [str(item).lower() for item in observed_affordances]
         if not any(any(expected.lower() in seen for seen in lowered) for expected in expected_affordances):
-            mismatches.append("expected_affordance_missing")
+            mismatches.append(
+                build_desktop_mismatch(
+                    "affordances_any",
+                    expected=expected_affordances,
+                    observed=observed_affordances,
+                    severity="medium",
+                    note="No observed affordance matched the expected affordance set.",
+                )
+            )
 
     expected_markers = _as_text_list(expected_efe_desktop.get("visual_markers_any"))
     if expected_markers:
         lowered_markers = [str(item).lower() for item in markers]
         if not any(expected.lower() in seen for expected in expected_markers for seen in lowered_markers):
-            mismatches.append("expected_visual_marker_missing")
+            mismatches.append(
+                build_desktop_mismatch(
+                    "visual_markers_any",
+                    expected=expected_markers,
+                    observed=markers,
+                    severity="high",
+                    note="Expected visual markers were not found after the operation.",
+                )
+            )
 
     expected_markers_absent = _as_text_list(expected_efe_desktop.get("visual_markers_absent"))
     if expected_markers_absent:
         lowered_markers = [str(item).lower() for item in markers]
         if any(expected.lower() in seen for expected in expected_markers_absent for seen in lowered_markers):
-            mismatches.append("unexpected_visual_marker_present")
+            mismatches.append(
+                build_desktop_mismatch(
+                    "visual_markers_absent",
+                    expected=expected_markers_absent,
+                    observed=markers,
+                    severity="high",
+                    note="A marker expected to disappear remained visible in the observed desktop state.",
+                )
+            )
 
     expected_text = _as_text_list(expected_efe_desktop.get("visible_text_any"))
     if expected_text:
         lowered_text = [str(item).lower() for item in visible_text]
         if not any(expected.lower() in seen for expected in expected_text for seen in lowered_text):
-            mismatches.append("expected_visible_text_missing")
+            mismatches.append(
+                build_desktop_mismatch(
+                    "visible_text_any",
+                    expected=expected_text,
+                    observed=visible_text,
+                    severity="high",
+                    note="Expected text was not visible in the LAB window after typing.",
+                )
+            )
 
     return mismatches
 
@@ -568,30 +644,56 @@ def build_verify_input(
     verify_spec_n = copy.deepcopy(verify_spec if isinstance(verify_spec, dict) else _materialize_verify_spec(operation_class_n, action_type=str(context_n.get("action_type") or "")))
     before_visual = _extract_visual_state(before_state)
     after_visual = _extract_visual_state(after_state)
-    return {
-        "operation_class": operation_class_n,
-        "verify_spec": verify_spec_n,
-        "expected_efe_desktop": expected,
-        "before_state": before_visual,
-        "after_state": after_visual,
+    after_state_n = _as_dict(after_state)
+    before_state_n = _as_dict(before_state)
+    runtime_metadata = _as_dict(after_state_n.get("runtime_metadata"))
+    arbiter_context = {
+        "post_arbiter": _as_dict(after_state_n.get("post_arbiter")),
         "required_evidence": _as_text_list(verify_spec_n.get("evidence_required")),
     }
+    verify_input = build_desktop_verify_input(
+        operation_class=operation_class_n,
+        expected_efe_desktop=expected,
+        before_state=before_visual,
+        after_state=after_visual,
+        screenshot_before=str(before_visual.get("screenshot_path") or before_state_n.get("screenshot_path") or ""),
+        screenshot_after=str(after_visual.get("screenshot_path") or after_state_n.get("screenshot_path") or ""),
+        arbiter_context=arbiter_context,
+        runtime_metadata=runtime_metadata,
+        verify_spec=verify_spec_n,
+    )
+    verify_input["required_evidence"] = _as_text_list(verify_spec_n.get("evidence_required"))
+    return verify_input
 
 
 def _missing_required_evidence(verify_input: Dict[str, Any]) -> list[str]:
     after_state = _as_dict(verify_input.get("after_state"))
+    runtime = _as_dict(verify_input.get("runtime_metadata"))
+    arbiter_context = _as_dict(verify_input.get("arbiter_context"))
+    post_arbiter = _as_dict(arbiter_context.get("post_arbiter"))
+    post_result = _as_dict(post_arbiter.get("verification_result"))
     required = _as_text_list(verify_input.get("required_evidence"))
     missing: list[str] = []
     for item in required:
-        if item == "post_screenshot" and not str(after_state.get("screenshot_path") or "").strip():
+        if item == "post_screenshot" and not str(verify_input.get("screenshot_after") or after_state.get("screenshot_path") or "").strip():
             missing.append(item)
-        elif item == "desktop_arbiter_post" and not str(after_state.get("post_action_verdict") or "").strip():
+        elif item == "desktop_arbiter_post" and not str(
+            post_result.get("verdict")
+            or post_arbiter.get("post_action_verdict")
+            or after_state.get("post_action_verdict")
+            or ""
+        ).strip():
             missing.append(item)
         elif item == "runtime_metadata.active_window" and not (
-            str(after_state.get("active_window_title") or "").strip() or _as_text_list(after_state.get("markers"))
+            str(after_state.get("active_window_title") or runtime.get("active_window_title") or "").strip()
+            or _as_text_list(after_state.get("markers"))
+            or _as_text_list(runtime.get("visual_markers"))
         ):
             missing.append(item)
-        elif item == "runtime_metadata.find_text" and not _as_text_list((_as_dict(after_state.get("metadata"))).get("visible_text")):
+        elif item == "runtime_metadata.find_text" and not (
+            _as_text_list((_as_dict(after_state.get("metadata"))).get("visible_text"))
+            or _as_text_list(runtime.get("visible_text"))
+        ):
             missing.append(item)
     return missing
 
@@ -609,30 +711,23 @@ def _verdict_hint(reason_code: str) -> str:
     return "Inspect mismatches and tighten the LAB desktop contract before retrying."
 
 
-def evaluate_desktop_efe(
-    *,
-    operation_class: Optional[str],
-    context: Dict[str, Any],
-    before_state: Dict[str, Any],
-    after_state: Dict[str, Any],
-    expected_efe_desktop: Optional[Dict[str, Any]] = None,
-    verify_spec: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    verify_input = build_verify_input(
-        operation_class,
-        context,
-        before_state,
-        after_state,
-        expected_efe_desktop=expected_efe_desktop,
-        verify_spec=verify_spec,
-    )
-    expected = _as_dict(verify_input.get("expected_efe_desktop"))
-    after_visual = _as_dict(verify_input.get("after_state"))
-    post_verdict = str(after_visual.get("post_action_verdict") or "").strip().lower()
-    missing_evidence = _missing_required_evidence(verify_input)
+def evaluate_desktop_verify_input(verify_input: Dict[str, Any]) -> Dict[str, Any]:
+    verify_input_n = _as_dict(verify_input)
+    expected = _as_dict(verify_input_n.get("expected_efe_desktop"))
+    after_visual = _as_dict(verify_input_n.get("after_state"))
+    arbiter_context = _as_dict(verify_input_n.get("arbiter_context"))
+    post_arbiter = _as_dict(arbiter_context.get("post_arbiter"))
+    post_result = _as_dict(post_arbiter.get("verification_result"))
+    post_verdict = str(
+        after_visual.get("post_action_verdict")
+        or post_result.get("verdict")
+        or post_arbiter.get("post_action_verdict")
+        or ""
+    ).strip().lower()
+    missing_evidence = _missing_required_evidence(verify_input_n)
     mismatches = _evaluate_expected_efe(expected, after_visual)
-    mismatches.extend(_as_text_list(after_visual.get("post_action_mismatches")))
-    mismatches = _dedupe(mismatches)
+    mismatches.extend(normalize_desktop_mismatches(post_result.get("mismatches") or post_arbiter.get("mismatches")))
+    mismatches = normalize_desktop_mismatches(mismatches)
 
     verdict = "uncertain"
     reason_code = "verify_uncertain"
@@ -654,13 +749,46 @@ def evaluate_desktop_efe(
     else:
         reason_code = "verify_uncertain"
 
+    confidence = "medium"
+    if verdict == "pass":
+        confidence = "high" if not missing_evidence else "medium"
+    elif verdict == "fail":
+        confidence = "high"
+    elif missing_evidence:
+        confidence = "low"
+
+    return build_desktop_verification_result(
+        verdict=verdict,
+        mismatches=mismatches,
+        reason_code=reason_code,
+        next_hint=_verdict_hint(reason_code),
+        confidence=confidence,
+    )
+
+
+def evaluate_desktop_efe(
+    *,
+    operation_class: Optional[str],
+    context: Dict[str, Any],
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    expected_efe_desktop: Optional[Dict[str, Any]] = None,
+    verify_spec: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    verify_input = build_verify_input(
+        operation_class,
+        context,
+        before_state,
+        after_state,
+        expected_efe_desktop=expected_efe_desktop,
+        verify_spec=verify_spec,
+    )
+    expected = _as_dict(verify_input.get("expected_efe_desktop"))
+    verification_result = evaluate_desktop_verify_input(verify_input)
     return {
         "expected_efe_desktop": expected,
         "verify_input": verify_input,
-        "verdict": verdict,
-        "mismatches": mismatches,
-        "reason_code": reason_code,
-        "next_hint": _verdict_hint(reason_code),
+        "verification_result": verification_result,
     }
 
 
