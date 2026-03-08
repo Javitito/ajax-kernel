@@ -453,6 +453,217 @@ def _materialize_undo_info(operation_class: Optional[str], *, action_type: str, 
     return info
 
 
+def materialize_expected_efe_desktop(operation_class: Optional[str], context: Dict[str, Any]) -> Dict[str, Any]:
+    return _materialize_expected_efe(operation_class, _as_dict(context))
+
+
+def _extract_visual_state(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    raw = _as_dict(state)
+    runtime = _as_dict(raw.get("runtime_metadata"))
+    metadata = _as_dict(raw.get("metadata"))
+    post_arbiter = _as_dict(raw.get("post_arbiter"))
+    dialogs = _as_text_list(raw.get("dialogs") or metadata.get("dialogs"))
+    affordances = _as_text_list(raw.get("observed_affordances") or metadata.get("observed_affordances") or metadata.get("ui_affordances"))
+    markers = _as_text_list(
+        raw.get("visual_markers")
+        or runtime.get("visual_markers")
+        or metadata.get("visual_markers")
+        or metadata.get("markers")
+    )
+    visible_text = _as_text_list(raw.get("visible_text") or runtime.get("visible_text") or metadata.get("visible_text"))
+    return {
+        "active_window_title": str(
+            raw.get("active_window_title")
+            or runtime.get("active_window_title")
+            or metadata.get("active_window_title")
+            or ""
+        ).strip(),
+        "focus_target": str(raw.get("focus_target") or metadata.get("focus_target") or "").strip(),
+        "dialogs": dialogs,
+        "observed_affordances": affordances,
+        "markers": markers,
+        "metadata": {"visible_text": visible_text},
+        "post_action_verdict": str(raw.get("post_action_verdict") or post_arbiter.get("post_action_verdict") or "").strip().lower(),
+        "post_action_mismatches": _as_text_list(raw.get("mismatches") or post_arbiter.get("mismatches")),
+        "screenshot_path": str(raw.get("screenshot_path") or raw.get("png_path") or "").strip(),
+    }
+
+
+def _expected_contains(actual: str, expected: Any) -> bool:
+    if isinstance(expected, list):
+        return any(_expected_contains(actual, item) for item in expected)
+    text = str(expected or "").strip().lower()
+    if not text:
+        return False
+    return text in actual.lower()
+
+
+def _evaluate_expected_efe(expected_efe_desktop: Dict[str, Any], visual: Dict[str, Any]) -> list[str]:
+    mismatches: list[str] = []
+    active_window = str(visual.get("active_window_title") or "")
+    focus_target = str(visual.get("focus_target") or "")
+    dialogs = visual.get("dialogs") if isinstance(visual.get("dialogs"), list) else []
+    observed_affordances = visual.get("observed_affordances") if isinstance(visual.get("observed_affordances"), list) else []
+    markers = visual.get("markers") if isinstance(visual.get("markers"), list) else []
+    visible_text = _as_text_list((visual.get("metadata") or {}).get("visible_text") if isinstance(visual.get("metadata"), dict) else None)
+
+    expected_title = expected_efe_desktop.get("active_window_title_contains")
+    if expected_title and not _expected_contains(active_window, expected_title):
+        mismatches.append("active_window_title_mismatch")
+
+    expected_focus = expected_efe_desktop.get("focus_target_contains")
+    if expected_focus and not _expected_contains(focus_target, expected_focus):
+        mismatches.append("focus_target_mismatch")
+
+    if bool(expected_efe_desktop.get("dialogs_absent")) and dialogs:
+        mismatches.append("dialogs_still_present")
+
+    expected_dialogs = _as_text_list(expected_efe_desktop.get("dialogs_present"))
+    for item in expected_dialogs:
+        if not any(item.lower() in seen.lower() for seen in dialogs):
+            mismatches.append(f"expected_dialog_missing:{item}")
+
+    expected_affordances = _as_text_list(expected_efe_desktop.get("affordances_any"))
+    if expected_affordances:
+        lowered = [str(item).lower() for item in observed_affordances]
+        if not any(any(expected.lower() in seen for seen in lowered) for expected in expected_affordances):
+            mismatches.append("expected_affordance_missing")
+
+    expected_markers = _as_text_list(expected_efe_desktop.get("visual_markers_any"))
+    if expected_markers:
+        lowered_markers = [str(item).lower() for item in markers]
+        if not any(expected.lower() in seen for expected in expected_markers for seen in lowered_markers):
+            mismatches.append("expected_visual_marker_missing")
+
+    expected_markers_absent = _as_text_list(expected_efe_desktop.get("visual_markers_absent"))
+    if expected_markers_absent:
+        lowered_markers = [str(item).lower() for item in markers]
+        if any(expected.lower() in seen for expected in expected_markers_absent for seen in lowered_markers):
+            mismatches.append("unexpected_visual_marker_present")
+
+    expected_text = _as_text_list(expected_efe_desktop.get("visible_text_any"))
+    if expected_text:
+        lowered_text = [str(item).lower() for item in visible_text]
+        if not any(expected.lower() in seen for expected in expected_text for seen in lowered_text):
+            mismatches.append("expected_visible_text_missing")
+
+    return mismatches
+
+
+def build_verify_input(
+    operation_class: Optional[str],
+    context: Dict[str, Any],
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    *,
+    expected_efe_desktop: Optional[Dict[str, Any]] = None,
+    verify_spec: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    operation_class_n = str(operation_class or "").strip().lower() or None
+    context_n = _as_dict(context)
+    expected = _merge_expected_efe(
+        materialize_expected_efe_desktop(operation_class_n, context_n),
+        expected_efe_desktop,
+    )
+    verify_spec_n = copy.deepcopy(verify_spec if isinstance(verify_spec, dict) else _materialize_verify_spec(operation_class_n, action_type=str(context_n.get("action_type") or "")))
+    before_visual = _extract_visual_state(before_state)
+    after_visual = _extract_visual_state(after_state)
+    return {
+        "operation_class": operation_class_n,
+        "verify_spec": verify_spec_n,
+        "expected_efe_desktop": expected,
+        "before_state": before_visual,
+        "after_state": after_visual,
+        "required_evidence": _as_text_list(verify_spec_n.get("evidence_required")),
+    }
+
+
+def _missing_required_evidence(verify_input: Dict[str, Any]) -> list[str]:
+    after_state = _as_dict(verify_input.get("after_state"))
+    required = _as_text_list(verify_input.get("required_evidence"))
+    missing: list[str] = []
+    for item in required:
+        if item == "post_screenshot" and not str(after_state.get("screenshot_path") or "").strip():
+            missing.append(item)
+        elif item == "desktop_arbiter_post" and not str(after_state.get("post_action_verdict") or "").strip():
+            missing.append(item)
+        elif item == "runtime_metadata.active_window" and not (
+            str(after_state.get("active_window_title") or "").strip() or _as_text_list(after_state.get("markers"))
+        ):
+            missing.append(item)
+        elif item == "runtime_metadata.find_text" and not _as_text_list((_as_dict(after_state.get("metadata"))).get("visible_text")):
+            missing.append(item)
+    return missing
+
+
+def _verdict_hint(reason_code: str) -> str:
+    code = str(reason_code or "").strip().lower()
+    if code == "ok":
+        return ""
+    if code == "verify_evidence_incomplete":
+        return "Capture stronger post-action evidence before deciding success."
+    if code == "verify_uncertain":
+        return "Capture a fresh screenshot or richer runtime metadata before deciding success."
+    if code == "missing_expected_efe_desktop":
+        return "Materialize a concrete expected_efe_desktop before VERIFY."
+    return "Inspect mismatches and tighten the LAB desktop contract before retrying."
+
+
+def evaluate_desktop_efe(
+    *,
+    operation_class: Optional[str],
+    context: Dict[str, Any],
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    expected_efe_desktop: Optional[Dict[str, Any]] = None,
+    verify_spec: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    verify_input = build_verify_input(
+        operation_class,
+        context,
+        before_state,
+        after_state,
+        expected_efe_desktop=expected_efe_desktop,
+        verify_spec=verify_spec,
+    )
+    expected = _as_dict(verify_input.get("expected_efe_desktop"))
+    after_visual = _as_dict(verify_input.get("after_state"))
+    post_verdict = str(after_visual.get("post_action_verdict") or "").strip().lower()
+    missing_evidence = _missing_required_evidence(verify_input)
+    mismatches = _evaluate_expected_efe(expected, after_visual)
+    mismatches.extend(_as_text_list(after_visual.get("post_action_mismatches")))
+    mismatches = _dedupe(mismatches)
+
+    verdict = "uncertain"
+    reason_code = "verify_uncertain"
+    if not expected:
+        reason_code = "missing_expected_efe_desktop"
+    elif post_verdict == "fail":
+        verdict = "fail"
+        reason_code = "verify_fail"
+    elif mismatches:
+        verdict = "fail"
+        reason_code = "verify_fail"
+    elif missing_evidence:
+        reason_code = "verify_evidence_incomplete"
+    elif post_verdict == "pass":
+        verdict = "pass"
+        reason_code = "ok"
+    elif post_verdict == "uncertain":
+        reason_code = "verify_uncertain"
+    else:
+        reason_code = "verify_uncertain"
+
+    return {
+        "expected_efe_desktop": expected,
+        "verify_input": verify_input,
+        "verdict": verdict,
+        "mismatches": mismatches,
+        "reason_code": reason_code,
+        "next_hint": _verdict_hint(reason_code),
+    }
+
+
 def resolve_operation_contract(
     *,
     action_type: str,
@@ -475,7 +686,7 @@ def resolve_operation_contract(
         hotkeys=hotkeys,
         app=app,
     )
-    spec_expected = _materialize_expected_efe(operation_class_n, context)
+    spec_expected = materialize_expected_efe_desktop(operation_class_n, context)
     merged_expected = _merge_expected_efe(spec_expected, expected_efe_desktop)
     verify_spec = _materialize_verify_spec(operation_class_n, action_type=action_n)
     undo_info = _materialize_undo_info(operation_class_n, action_type=action_n, context=context)
@@ -486,6 +697,8 @@ def resolve_operation_contract(
         contract_source = "generic_action"
     return {
         "operation_class": operation_class_n,
+        "context": context,
+        "expected_efe_desktop_materialized": spec_expected,
         "expected_efe_desktop": merged_expected,
         "verify_spec": verify_spec,
         "undo_info": undo_info,
