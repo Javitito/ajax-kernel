@@ -8,6 +8,7 @@ from agency.desktop_verify_contract import (
     build_desktop_verification_result,
     build_desktop_verify_input,
     normalize_desktop_mismatches,
+    normalize_desktop_verification_result,
 )
 
 
@@ -469,7 +470,12 @@ def _extract_visual_state(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     runtime = _as_dict(raw.get("runtime_metadata"))
     metadata = _as_dict(raw.get("metadata"))
     post_arbiter = _as_dict(raw.get("post_arbiter"))
-    post_result = _as_dict(post_arbiter.get("verification_result"))
+    raw_post_result = post_arbiter.get("verify_result") or post_arbiter.get("verification_result")
+    post_result = (
+        normalize_desktop_verification_result(raw_post_result)
+        if isinstance(raw_post_result, dict) and raw_post_result
+        else {}
+    )
     dialogs = _as_text_list(raw.get("dialogs") or metadata.get("dialogs"))
     affordances = _as_text_list(raw.get("observed_affordances") or metadata.get("observed_affordances") or metadata.get("ui_affordances"))
     markers = _as_text_list(
@@ -717,7 +723,12 @@ def evaluate_desktop_verify_input(verify_input: Dict[str, Any]) -> Dict[str, Any
     after_visual = _as_dict(verify_input_n.get("after_state"))
     arbiter_context = _as_dict(verify_input_n.get("arbiter_context"))
     post_arbiter = _as_dict(arbiter_context.get("post_arbiter"))
-    post_result = _as_dict(post_arbiter.get("verification_result"))
+    raw_post_result = post_arbiter.get("verify_result") or post_arbiter.get("verification_result")
+    post_result = (
+        normalize_desktop_verification_result(raw_post_result)
+        if isinstance(raw_post_result, dict) and raw_post_result
+        else {}
+    )
     post_verdict = str(
         after_visual.get("post_action_verdict")
         or post_result.get("verdict")
@@ -726,7 +737,14 @@ def evaluate_desktop_verify_input(verify_input: Dict[str, Any]) -> Dict[str, Any
     ).strip().lower()
     missing_evidence = _missing_required_evidence(verify_input_n)
     mismatches = _evaluate_expected_efe(expected, after_visual)
-    mismatches.extend(normalize_desktop_mismatches(post_result.get("mismatches") or post_arbiter.get("mismatches")))
+    mismatches.extend(
+        normalize_desktop_mismatches(
+            post_result.get("verify_mismatch")
+            or post_result.get("mismatches")
+            or post_arbiter.get("verify_mismatch")
+            or post_arbiter.get("mismatches")
+        )
+    )
     mismatches = normalize_desktop_mismatches(mismatches)
 
     verdict = "uncertain"
@@ -788,6 +806,8 @@ def evaluate_desktop_efe(
     return {
         "expected_efe_desktop": expected,
         "verify_input": verify_input,
+        "verify_result": verification_result,
+        "verify_mismatch": verification_result.get("verify_mismatch") or [],
         "verification_result": verification_result,
     }
 

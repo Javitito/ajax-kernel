@@ -232,6 +232,8 @@ def test_compiler_writes_artifact(tmp_path: Path, monkeypatch) -> None:
     written = json.loads(artifact.read_text(encoding="utf-8"))
     assert written["role"] == "desktop_compiler"
     assert written["verification_contract_version"] == "desktop_v1"
+    assert isinstance(written["verify_results"], list)
+    assert isinstance(written["verify_mismatch"], list)
     assert isinstance(written["verification_results"], list)
 
 
@@ -251,6 +253,8 @@ def test_pre_verdict_shape(tmp_path: Path, monkeypatch) -> None:
 
     assert payload["mode"] == "pre"
     assert isinstance(payload["strategy_ok"], bool)
+    assert payload["verify_result"]["verdict"] in {"pass", "fail", "uncertain"}
+    assert isinstance(payload["verify_mismatch"], list)
     assert payload["verification_result"]["verdict"] in {"pass", "fail", "uncertain"}
     assert isinstance(payload["verification_result"]["mismatches"], list)
     assert isinstance(payload["visual_risks"], list)
@@ -280,6 +284,8 @@ def test_post_verdict_shape(tmp_path: Path, monkeypatch) -> None:
 
     assert payload["mode"] == "post"
     assert isinstance(payload["strategy_ok"], bool)
+    assert payload["verify_result"]["verdict"] in {"pass", "fail", "uncertain"}
+    assert isinstance(payload["verify_result"]["verify_mismatch"], list)
     assert payload["verification_result"]["verdict"] in {"pass", "fail", "uncertain"}
     assert isinstance(payload["verification_result"]["mismatches"], list)
     assert isinstance(payload["visual_risks"], list)
@@ -356,6 +362,8 @@ def test_compiler_uses_shared_verify_contract(tmp_path: Path, monkeypatch) -> No
         scout_artifact_path=str(scout["artifact_path"]),
         arbiter_artifact_paths=[str(arbiter["artifact_path"])],
     )
+    assert payload["verify_results"][0]["verification_contract_version"] == "desktop_v1"
+    assert isinstance(payload["verify_mismatch"], list)
     assert payload["verification_results"][0]["verification_contract_version"] == "desktop_v1"
 
 

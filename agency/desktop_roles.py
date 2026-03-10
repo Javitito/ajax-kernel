@@ -13,6 +13,7 @@ from agency.desktop_verify_contract import (
     build_desktop_mismatch,
     build_desktop_verification_result,
     build_desktop_verify_input,
+    extract_desktop_verify_mismatch,
     normalize_desktop_mismatches,
     normalize_desktop_verification_result,
 )
@@ -78,6 +79,29 @@ def _as_text_list(value: Any) -> list[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _normalize_verify_result_alias(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict) and value:
+        return normalize_desktop_verification_result(value)
+    return {}
+
+
+def _normalize_verify_results_alias(values: Any) -> list[Dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    return [
+        normalize_desktop_verification_result(item)
+        for item in values
+        if isinstance(item, dict) and item
+    ]
+
+
+def _aggregate_verify_mismatch(values: Any) -> list[Dict[str, Any]]:
+    mismatches: list[Dict[str, Any]] = []
+    for item in _normalize_verify_results_alias(values):
+        mismatches.extend(extract_desktop_verify_mismatch(item))
+    return normalize_desktop_mismatches(mismatches)
 
 
 def _dedupe(values: Iterable[str]) -> list[str]:
@@ -308,6 +332,38 @@ def _write_role_payload(
     receipt_path = root_dir / "artifacts" / "receipts" / f"desktop_{role_slug}_{label}.json"
 
     payload = dict(payload)
+    verify_result = _normalize_verify_result_alias(
+        payload.get("verify_result") or payload.get("verification_result")
+    )
+    if verify_result:
+        payload["verify_result"] = verify_result
+        payload["verification_result"] = verify_result
+        payload["verify_mismatch"] = verify_result.get("verify_mismatch") or []
+
+    verify_inputs = payload.get("verify_inputs")
+    if not isinstance(verify_inputs, list) or (
+        not verify_inputs
+        and isinstance(payload.get("verification_inputs"), list)
+        and payload.get("verification_inputs")
+    ):
+        verify_inputs = payload.get("verification_inputs")
+    if isinstance(verify_inputs, list):
+        payload["verify_inputs"] = [item for item in verify_inputs if isinstance(item, dict)]
+        payload["verification_inputs"] = payload["verify_inputs"]
+
+    verify_results_source = payload.get("verify_results")
+    if not isinstance(verify_results_source, list) or (
+        not verify_results_source
+        and isinstance(payload.get("verification_results"), list)
+        and payload.get("verification_results")
+    ):
+        verify_results_source = payload.get("verification_results")
+    verify_results = _normalize_verify_results_alias(verify_results_source)
+    if verify_results:
+        payload["verify_results"] = verify_results
+        payload["verification_results"] = verify_results
+        payload["verify_mismatch"] = _aggregate_verify_mismatch(verify_results)
+
     payload["artifact_path"] = str(artifact_path)
     _safe_write_json(artifact_path, payload)
 
@@ -327,11 +383,15 @@ def _write_role_payload(
     }
     if isinstance(payload.get("verify_input"), dict):
         receipt["verify_input"] = payload.get("verify_input")
-    if isinstance(payload.get("verification_result"), dict):
-        receipt["verification_result"] = payload.get("verification_result")
-        receipt["verdict"] = _as_dict(payload.get("verification_result")).get("verdict")
-    if isinstance(payload.get("verification_results"), list):
-        receipt["verification_results"] = payload.get("verification_results")
+    if isinstance(payload.get("verify_result"), dict):
+        receipt["verify_result"] = payload.get("verify_result")
+        receipt["verification_result"] = payload.get("verify_result")
+        receipt["verify_mismatch"] = _as_dict(payload.get("verify_result")).get("verify_mismatch") or []
+        receipt["verdict"] = _as_dict(payload.get("verify_result")).get("verdict")
+    if isinstance(payload.get("verify_results"), list):
+        receipt["verify_results"] = payload.get("verify_results")
+        receipt["verification_results"] = payload.get("verify_results")
+        receipt["verify_mismatch"] = payload.get("verify_mismatch") or []
     _safe_write_json(receipt_path, receipt)
 
     payload["receipt_path"] = str(receipt_path)
@@ -528,6 +588,8 @@ def run_desktop_arbiter(
         "strategy_ok": False,
         "visual_risks": [],
         "verify_input": {},
+        "verify_result": {},
+        "verify_mismatch": [],
         "verification_result": {},
         "verification_contract_version": DESKTOP_VERIFICATION_CONTRACT_VERSION,
         "next_hint": "",
@@ -662,6 +724,8 @@ def run_desktop_arbiter(
             "reason_code": str(verification_result.get("reason_code") or "ok"),
             "strategy_ok": bool(strategy_ok),
             "expected_efe_desktop": resolved_expected_efe if mode_n == "post" else _as_dict(contract.get("expected_efe_desktop")),
+            "verify_result": verification_result,
+            "verify_mismatch": verification_result.get("verify_mismatch") or [],
             "visual_risks": risks,
             "verification_result": verification_result,
             "verify_input": payload.get("verify_input")
@@ -726,6 +790,9 @@ def run_desktop_compiler(
         "reusable_guards": [],
         "crystallization_candidate": False,
         "verification_contract_version": DESKTOP_VERIFICATION_CONTRACT_VERSION,
+        "verify_inputs": [],
+        "verify_results": [],
+        "verify_mismatch": [],
         "verification_inputs": [],
         "verification_results": [],
         "next_hint": "",
@@ -783,9 +850,9 @@ def run_desktop_compiler(
         if isinstance(item.get("verify_input"), dict)
     ]
     verification_results = [
-        normalize_desktop_verification_result(item.get("verification_result"))
+        normalize_desktop_verification_result(item.get("verify_result") or item.get("verification_result"))
         for item in loaded_arbiters
-        if isinstance(item.get("verification_result"), dict)
+        if isinstance(item.get("verify_result") or item.get("verification_result"), dict)
     ]
     post_candidates = [
         item for item in loaded_arbiters
@@ -808,10 +875,12 @@ def run_desktop_compiler(
     anti_patterns.extend(_as_text_list(scout_artifact.get("visual_risks")))
     for arbiter in loaded_arbiters:
         anti_patterns.extend(_as_text_list(arbiter.get("visual_risks")))
-        verification_result = normalize_desktop_verification_result(arbiter.get("verification_result"))
+        verification_result = normalize_desktop_verification_result(
+            arbiter.get("verify_result") or arbiter.get("verification_result")
+        )
         anti_patterns.extend(
             f"verification_mismatch:{item['field']}"
-            for item in verification_result.get("mismatches", [])
+            for item in verification_result.get("verify_mismatch", [])
             if isinstance(item, dict) and str(item.get("field") or "").strip()
         )
 
@@ -839,6 +908,9 @@ def run_desktop_compiler(
             "anti_patterns": _dedupe(anti_patterns),
             "reusable_guards": _dedupe(reusable_guards),
             "crystallization_candidate": bool(crystallization_candidate),
+            "verify_inputs": verification_inputs,
+            "verify_results": verification_results,
+            "verify_mismatch": _aggregate_verify_mismatch(verification_results),
             "verification_inputs": verification_inputs,
             "verification_results": verification_results,
             "next_hint": "Review the candidate before promoting it into a wider LAB recipe.",
@@ -1021,6 +1093,8 @@ def run_desktop_verify_demo(
         "verification_contract_version": DESKTOP_VERIFICATION_CONTRACT_VERSION,
         "fixture_screenshot_path": str(screenshot),
         "verify_input": verify_input,
+        "verify_result": verification_result,
+        "verify_mismatch": verification_result.get("verify_mismatch") or [],
         "verification_result": verification_result,
         "reason_code": str(verification_result.get("reason_code") or "verify_demo_failed"),
         "next_hint": str(verification_result.get("next_hint") or ""),

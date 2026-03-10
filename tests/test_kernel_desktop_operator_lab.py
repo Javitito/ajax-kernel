@@ -433,6 +433,9 @@ def test_operator_uses_shared_verify_contract(tmp_path: Path, monkeypatch) -> No
     )
     assert payload["verification_contract_version"] == "desktop_v1"
     assert payload["verify"]["verify_input"]["verification_contract_version"] == "desktop_v1"
+    assert payload["verify"]["verify_result"]["verification_contract_version"] == "desktop_v1"
+    assert isinstance(payload["verify"]["verify_mismatch"], list)
+    assert payload["verify_result"]["verification_contract_version"] == "desktop_v1"
     assert payload["verify"]["verification_result"]["verification_contract_version"] == "desktop_v1"
 
 
@@ -537,6 +540,8 @@ def test_receipts_include_shared_contract(tmp_path: Path, monkeypatch) -> None:
     )
     receipt = json.loads(Path(str(payload["receipt_path"])).read_text(encoding="utf-8"))
     assert receipt["verification_contract_version"] == "desktop_v1"
+    assert receipt["verify_result"]["verification_contract_version"] == "desktop_v1"
+    assert isinstance(receipt["verify_mismatch"], list)
     assert receipt["verification_result"]["verification_contract_version"] == "desktop_v1"
 
 

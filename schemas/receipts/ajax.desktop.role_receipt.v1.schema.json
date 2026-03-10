@@ -82,6 +82,30 @@
         "null"
       ]
     },
+    "verify_inputs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "verify_result": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "verify_results": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "verify_mismatch": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
     "verification_result": {
       "type": [
         "object",

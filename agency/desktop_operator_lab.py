@@ -8,7 +8,11 @@ from typing import Any, Dict, Optional
 
 from agency.close_editor_safe import close_editor_safe
 from agency.desktop_operation_specs import evaluate_desktop_efe, resolve_operation_contract
-from agency.desktop_verify_contract import DESKTOP_VERIFICATION_CONTRACT_VERSION
+from agency.desktop_verify_contract import (
+    DESKTOP_VERIFICATION_CONTRACT_VERSION,
+    extract_desktop_verify_mismatch,
+    normalize_desktop_verification_result,
+)
 from agency.desktop_roles import _build_lab_gate as build_desktop_lab_gate
 from agency.desktop_roles import run_desktop_arbiter, run_desktop_scout
 from agency.lab_snap import capture_lab_snapshot
@@ -332,6 +336,24 @@ def _write_operation_artifact(root_dir: Path, payload: Dict[str, Any], *, ts: Op
     artifact_path = root_dir / "artifacts" / "desktop" / f"operation_{label}.json"
     receipt_path = root_dir / "artifacts" / "receipts" / f"desktop_operator_{label}.json"
     payload = dict(payload)
+    verify_block = _as_dict(payload.get("verify"))
+    verify_input = _as_dict(verify_block.get("verify_input"))
+    raw_verify_result = verify_block.get("verify_result") or verify_block.get("verification_result")
+    verify_result = (
+        normalize_desktop_verification_result(raw_verify_result)
+        if isinstance(raw_verify_result, dict) and raw_verify_result
+        else {}
+    )
+    verify_mismatch = extract_desktop_verify_mismatch(verify_result) if verify_result else []
+    if verify_block:
+        verify_block["verify_input"] = verify_input
+        verify_block["verify_result"] = verify_result
+        verify_block["verification_result"] = verify_result
+        verify_block["verify_mismatch"] = verify_mismatch
+        payload["verify"] = verify_block
+    payload["verify_input"] = verify_input
+    payload["verify_result"] = verify_result
+    payload["verify_mismatch"] = verify_mismatch
     payload["artifact_path"] = str(artifact_path)
     _safe_write_json(artifact_path, payload)
     receipt = {
@@ -351,9 +373,11 @@ def _write_operation_artifact(root_dir: Path, payload: Dict[str, Any], *, ts: Op
         "verify_spec_name": _as_dict(_as_dict(payload.get("prepare")).get("verify_spec")).get("name"),
         "undo_spec_name": _as_dict(payload.get("undo_info")).get("name"),
         "verification_contract_version": payload.get("verification_contract_version"),
-        "verdict": str(_as_dict(_as_dict(payload.get("verify")).get("verification_result")).get("verdict") or ""),
-        "verify_input": _as_dict(payload.get("verify")).get("verify_input"),
-        "verification_result": _as_dict(payload.get("verify")).get("verification_result"),
+        "verdict": str(_as_dict(payload.get("verify_result")).get("verdict") or ""),
+        "verify_input": payload.get("verify_input"),
+        "verify_result": payload.get("verify_result"),
+        "verify_mismatch": payload.get("verify_mismatch") or [],
+        "verification_result": payload.get("verify_result"),
     }
     _safe_write_json(receipt_path, receipt)
     payload["receipt_path"] = str(receipt_path)
@@ -417,7 +441,16 @@ def run_desktop_operate(
             "contract_source": resolved_contract.get("contract_source"),
         },
         "apply": {"executed": False, "action_detail": {}},
-        "verify": {"screenshot_after": None, "verify_input": {}, "verification_result": {}},
+        "verify": {
+            "screenshot_after": None,
+            "verify_input": {},
+            "verify_result": {},
+            "verify_mismatch": [],
+            "verification_result": {},
+        },
+        "verify_input": {},
+        "verify_result": {},
+        "verify_mismatch": [],
         "undo_info": undo_info or {"possible": False, "suggested_steps": []},
         "verdict": "fail",
         "result": "fail_closed",
@@ -572,22 +605,27 @@ def run_desktop_operate(
         verify_spec=verify_spec,
     )
     payload["verify"]["verify_input"] = verify_eval.get("verify_input") or {}
-    payload["verify"]["verification_result"] = verify_eval.get("verification_result") or {}
+    payload["verify"]["verify_result"] = verify_eval.get("verify_result") or verify_eval.get("verification_result") or {}
+    payload["verify"]["verify_mismatch"] = verify_eval.get("verify_mismatch") or []
+    payload["verify"]["verification_result"] = payload["verify"]["verify_result"]
+    payload["verify_input"] = payload["verify"]["verify_input"]
+    payload["verify_result"] = payload["verify"]["verify_result"]
+    payload["verify_mismatch"] = payload["verify"]["verify_mismatch"]
     payload["verify"]["post_arbiter_artifact_path"] = post_arbiter.get("artifact_path")
     payload["prepare"]["scout_artifact_path"] = scout.get("artifact_path")
     payload["prepare"]["pre_arbiter_artifact_path"] = pre_arbiter.get("artifact_path")
-    payload["verdict"] = str(_as_dict(payload["verify"]["verification_result"]).get("verdict") or "fail")
+    payload["verdict"] = str(_as_dict(payload["verify_result"]).get("verdict") or "fail")
 
     if payload["verdict"] == "pass":
         payload["result"] = "ok"
         payload["reason_code"] = "ok"
         payload["next_hint"] = ""
     elif payload["verdict"] == "uncertain":
-        payload["reason_code"] = str(_as_dict(verify_eval.get("verification_result")).get("reason_code") or "verify_uncertain")
-        payload["next_hint"] = str(_as_dict(verify_eval.get("verification_result")).get("next_hint") or _reason_hint("verify_uncertain"))
+        payload["reason_code"] = str(_as_dict(payload["verify_result"]).get("reason_code") or "verify_uncertain")
+        payload["next_hint"] = str(_as_dict(payload["verify_result"]).get("next_hint") or _reason_hint("verify_uncertain"))
     else:
-        payload["reason_code"] = str(_as_dict(verify_eval.get("verification_result")).get("reason_code") or "verify_fail")
-        payload["next_hint"] = str(_as_dict(verify_eval.get("verification_result")).get("next_hint") or _reason_hint("verify_fail"))
+        payload["reason_code"] = str(_as_dict(payload["verify_result"]).get("reason_code") or "verify_fail")
+        payload["next_hint"] = str(_as_dict(payload["verify_result"]).get("next_hint") or _reason_hint("verify_fail"))
 
     return _write_operation_artifact(root, payload)
 

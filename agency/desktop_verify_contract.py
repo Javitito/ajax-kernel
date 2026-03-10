@@ -33,6 +33,7 @@ class DesktopVerifyInput(TypedDict):
 
 class DesktopVerificationResult(TypedDict):
     verdict: DesktopVerdict
+    verify_mismatch: list[DesktopMismatch]
     mismatches: list[DesktopMismatch]
     reason_code: str
     next_hint: str
@@ -125,6 +126,35 @@ def normalize_desktop_mismatches(values: Any) -> list[DesktopMismatch]:
     return out
 
 
+DesktopVerifyMismatch = DesktopMismatch
+DesktopVerifyResult = DesktopVerificationResult
+
+
+def build_desktop_verify_mismatch(
+    field: str,
+    *,
+    expected: Any = None,
+    observed: Any = None,
+    severity: Any = "medium",
+    note: str = "",
+) -> DesktopVerifyMismatch:
+    return build_desktop_mismatch(
+        field,
+        expected=expected,
+        observed=observed,
+        severity=severity,
+        note=note,
+    )
+
+
+def normalize_desktop_verify_mismatch(value: Any) -> DesktopVerifyMismatch:
+    return normalize_desktop_mismatch(value)
+
+
+def normalize_desktop_verify_mismatches(values: Any) -> list[DesktopVerifyMismatch]:
+    return normalize_desktop_mismatches(values)
+
+
 def build_desktop_verify_input(
     *,
     operation_class: Optional[str],
@@ -179,12 +209,34 @@ def build_desktop_verification_result(
     next_hint: str,
     confidence: str,
 ) -> DesktopVerificationResult:
+    return build_desktop_verify_result(
+        verdict=verdict,
+        verify_mismatch=mismatches,
+        reason_code=reason_code,
+        next_hint=next_hint,
+        confidence=confidence,
+    )
+
+
+def build_desktop_verify_result(
+    *,
+    verdict: Any,
+    verify_mismatch: Any = None,
+    mismatches: Any = None,
+    reason_code: str,
+    next_hint: str,
+    confidence: str,
+) -> DesktopVerifyResult:
     confidence_n = _as_text(confidence).lower()
     if confidence_n not in {"low", "medium", "high"}:
         confidence_n = "medium"
+    verify_mismatch_n = normalize_desktop_verify_mismatches(
+        verify_mismatch if verify_mismatch is not None else mismatches
+    )
     return {
         "verdict": normalize_desktop_verdict(verdict),
-        "mismatches": normalize_desktop_mismatches(mismatches),
+        "verify_mismatch": verify_mismatch_n,
+        "mismatches": list(verify_mismatch_n),
         "reason_code": _as_text(reason_code),
         "next_hint": _as_text(next_hint),
         "confidence": confidence_n,
@@ -193,11 +245,21 @@ def build_desktop_verification_result(
 
 
 def normalize_desktop_verification_result(value: Any) -> DesktopVerificationResult:
+    return normalize_desktop_verify_result(value)
+
+
+def normalize_desktop_verify_result(value: Any) -> DesktopVerifyResult:
     payload = _as_dict(value)
-    return build_desktop_verification_result(
+    return build_desktop_verify_result(
         verdict=payload.get("verdict"),
-        mismatches=payload.get("mismatches"),
+        verify_mismatch=payload.get("verify_mismatch")
+        if payload.get("verify_mismatch") is not None
+        else payload.get("mismatches"),
         reason_code=str(payload.get("reason_code") or ""),
         next_hint=str(payload.get("next_hint") or ""),
         confidence=str(payload.get("confidence") or ""),
     )
+
+
+def extract_desktop_verify_mismatch(value: Any) -> list[DesktopVerifyMismatch]:
+    return list(normalize_desktop_verify_result(value).get("verify_mismatch") or [])

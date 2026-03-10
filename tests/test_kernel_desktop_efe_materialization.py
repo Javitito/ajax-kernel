@@ -75,6 +75,8 @@ def test_evaluate_desktop_efe_pass() -> None:
             "post_arbiter": {"post_action_verdict": "pass", "mismatches": []},
         },
     )
+    assert result["verify_result"]["verdict"] == "pass"
+    assert result["verify_mismatch"] == []
     verification_result = result["verification_result"]
     assert verification_result["verdict"] == "pass"
     assert verification_result["mismatches"] == []
@@ -92,6 +94,8 @@ def test_evaluate_desktop_efe_fail() -> None:
             "post_arbiter": {"post_action_verdict": "pass", "mismatches": []},
         },
     )
+    assert result["verify_result"]["verdict"] == "fail"
+    assert result["verify_mismatch"][0]["field"] == "visible_text_any"
     verification_result = result["verification_result"]
     assert verification_result["verdict"] == "fail"
     assert verification_result["mismatches"][0]["field"] == "visible_text_any"
@@ -107,6 +111,8 @@ def test_evaluate_desktop_efe_uncertain() -> None:
             "post_arbiter": {"post_action_verdict": "uncertain", "mismatches": []},
         },
     )
+    assert result["verify_result"]["verdict"] == "uncertain"
+    assert isinstance(result["verify_mismatch"], list)
     verification_result = result["verification_result"]
     assert verification_result["verdict"] == "uncertain"
     assert verification_result["reason_code"] in {"verify_evidence_incomplete", "verify_uncertain"}

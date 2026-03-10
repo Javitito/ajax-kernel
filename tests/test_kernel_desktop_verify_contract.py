@@ -94,6 +94,7 @@ def test_desktop_verification_result_shape() -> None:
         confidence="high",
     )
     assert result["verdict"] == "pass"
+    assert result["verify_mismatch"] == []
     assert result["mismatches"] == []
     assert result["confidence"] == "high"
     assert result["verification_contract_version"] == "desktop_v1"
@@ -151,6 +152,8 @@ def test_arbiter_uses_shared_verify_contract(tmp_path: Path, monkeypatch) -> Non
     )
     assert payload["ok"] is True
     assert payload["verify_input"]["verification_contract_version"] == "desktop_v1"
+    assert payload["verify_result"]["verification_contract_version"] == "desktop_v1"
+    assert payload["verify_mismatch"] == payload["verify_result"]["verify_mismatch"]
     assert payload["verification_result"]["verification_contract_version"] == "desktop_v1"
 
 
@@ -188,6 +191,8 @@ def test_compiler_uses_shared_verify_contract(tmp_path: Path, monkeypatch) -> No
     )
     assert payload["ok"] is True
     assert payload["verification_contract_version"] == "desktop_v1"
+    assert payload["verify_results"][0]["verification_contract_version"] == "desktop_v1"
+    assert isinstance(payload["verify_mismatch"], list)
     assert payload["verification_results"][0]["verification_contract_version"] == "desktop_v1"
 
 
@@ -205,6 +210,7 @@ def test_pass_result_shape() -> None:
     )
     assert result["verdict"] == "pass"
     assert result["confidence"] == "high"
+    assert result["verify_mismatch"] == []
 
 
 def test_fail_result_shape() -> None:
@@ -216,6 +222,7 @@ def test_fail_result_shape() -> None:
         confidence="high",
     )
     assert result["verdict"] == "fail"
+    assert result["verify_mismatch"][0]["field"] == "dialogs_absent"
     assert result["mismatches"][0]["field"] == "dialogs_absent"
 
 
@@ -251,6 +258,8 @@ def test_receipts_include_shared_contract(tmp_path: Path, monkeypatch) -> None:
     )
     receipt = json.loads(Path(str(payload["receipt_path"])).read_text(encoding="utf-8"))
     assert receipt["verification_contract_version"] == "desktop_v1"
+    assert receipt["verify_result"]["verification_contract_version"] == "desktop_v1"
+    assert isinstance(receipt["verify_mismatch"], list)
     assert receipt["verification_result"]["verification_contract_version"] == "desktop_v1"
 
 
@@ -281,4 +290,28 @@ def test_verify_demo_writes_shared_result(tmp_path: Path) -> None:
     artifact = Path(str(payload["artifact_path"]))
     assert artifact.exists()
     assert payload["verify_input"]["verification_contract_version"] == "desktop_v1"
+    assert payload["verify_result"]["verification_contract_version"] == "desktop_v1"
+    assert isinstance(payload["verify_mismatch"], list)
     assert payload["verification_result"]["verification_contract_version"] == "desktop_v1"
+
+
+def test_verify_result_aliases_normalize_legacy_shape() -> None:
+    result = contract.normalize_desktop_verify_result(
+        {
+            "verdict": "fail",
+            "mismatches": [
+                {
+                    "field": "focus_target_contains",
+                    "expected": "search",
+                    "observed": "dialog",
+                    "severity": "high",
+                    "note": "legacy mismatch",
+                }
+            ],
+            "reason_code": "verify_fail",
+            "next_hint": "Retry",
+            "confidence": "high",
+        }
+    )
+    assert result["verify_mismatch"][0]["field"] == "focus_target_contains"
+    assert result["mismatches"] == result["verify_mismatch"]
