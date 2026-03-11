@@ -4459,20 +4459,43 @@ class AjaxCore:
         except Exception as exc:
             if not self._is_missing_efe_error(exc):
                 raise
-            repaired, receipt, reason = self._repair_missing_efe_for_brain_plan(
+            repair_result = self._repair_missing_efe_for_brain_plan(
                 intention=intention, plan_json=plan_json, source=source
             )
-            if repaired:
+            if repair_result.success and isinstance(repair_result.plan, dict):
                 try:
-                    validated = self._validate_brain_plan(repaired)
+                    validated = self._validate_brain_plan(repair_result.plan)
                 except Exception as exc2:
                     return None, {
-                        "receipt": receipt,
+                        "receipt": repair_result.receipt_path,
                         "reason": str(exc2),
                         "repaired": False,
+                        "terminal": repair_result.terminal,
+                        "repair_path": repair_result.repair_path,
+                        "template_id": repair_result.template_id,
+                        "candidate_path": repair_result.candidate_path,
+                        "waiting_prompt": repair_result.waiting_prompt,
+                        "boundary": repair_result.boundary,
                     }
-                return validated, {"receipt": receipt, "repaired": True}
-            return None, {"receipt": receipt, "reason": reason or str(exc), "repaired": False}
+                return validated, {
+                    "receipt": repair_result.receipt_path,
+                    "repaired": True,
+                    "terminal": repair_result.terminal,
+                    "repair_path": repair_result.repair_path,
+                    "template_id": repair_result.template_id,
+                    "candidate_path": repair_result.candidate_path,
+                }
+            return None, {
+                "receipt": repair_result.receipt_path,
+                "reason": repair_result.reason or str(exc),
+                "repaired": False,
+                "terminal": repair_result.terminal,
+                "repair_path": repair_result.repair_path,
+                "template_id": repair_result.template_id,
+                "candidate_path": repair_result.candidate_path,
+                "waiting_prompt": repair_result.waiting_prompt,
+                "boundary": repair_result.boundary,
+            }
 
     def _repair_missing_efe_for_action_plan(
         self,
@@ -4481,9 +4504,22 @@ class AjaxCore:
         action_name: str,
         args: Dict[str, Any],
         evidence_required: List[str],
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+    ):
         if repair_plan_if_needed is None:
-            return None, None, "repair_loop_unavailable"
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                success=False,
+                plan=None,
+                receipt_path=None,
+                reason="repair_loop_unavailable",
+                terminal="GAP_LOGGED",
+                repair_path="waiting",
+                template_id=None,
+                candidate_path=None,
+                waiting_prompt=None,
+                boundary=None,
+            )
 
         plan_stub = {
             "goal": f"Ejecutar {action_name}",
@@ -4502,40 +4538,10 @@ class AjaxCore:
             "metadata": {"intention": intention, "source": "library_action_stub"},
         }
 
-        def _drafter_fn(prompt: str, original: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            try:
-                provider_name, provider_cfg = self._select_brain_provider()
-            except Exception:
-                return None
-            system_prompt = "Eres un reparador EFE. Responde SOLO JSON válido sin texto adicional."
-            try:
-                out = self._call_brain_provider(
-                    provider_name,
-                    provider_cfg,
-                    system_prompt,
-                    prompt,
-                    meta={"intention": intention, "planning": True, "purpose": "efe_repair"},
-                )
-            except Exception:
-                return None
-            if not isinstance(out, dict):
-                return None
-            if isinstance(out.get("expected_state"), dict):
-                repaired = dict(original)
-                repaired["expected_state"] = out.get("expected_state")
-                return repaired
-            return out if isinstance(out.get("steps"), list) else None
-
-        result = repair_plan_if_needed(
+        return repair_plan_if_needed(
             plan_stub,
-            drafter_fn=_drafter_fn,
             receipts_dir=self._default_receipts_dir(),
         )
-        if result.success and isinstance(result.plan, dict):
-            expected_state = result.plan.get("expected_state")
-            if isinstance(expected_state, dict) and expected_state:
-                return expected_state, result.receipt_path, None
-        return None, result.receipt_path, result.reason or "missing_efe_final"
 
     def _repair_missing_efe_for_brain_plan(
         self,
@@ -4543,51 +4549,27 @@ class AjaxCore:
         intention: str,
         plan_json: Dict[str, Any],
         source: str = "brain",
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+    ):
         if repair_plan_if_needed is None:
-            return None, None, "repair_loop_unavailable"
+            from types import SimpleNamespace
 
-        def _drafter_fn(prompt: str, original: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            try:
-                provider_name, provider_cfg = self._select_brain_provider()
-            except Exception:
-                return None
-            system_prompt = (
-                "Eres un reparador EFE de planes AJAX. Responde SOLO JSON valido.\n"
-                "No cambies acciones, args ni el orden de pasos. Solo completa success_spec.expected_state."
+            return SimpleNamespace(
+                success=False,
+                plan=None,
+                receipt_path=None,
+                reason="repair_loop_unavailable",
+                terminal="GAP_LOGGED",
+                repair_path="waiting",
+                template_id=None,
+                candidate_path=None,
+                waiting_prompt=None,
+                boundary=None,
             )
-            payload = {
-                "intention": intention,
-                "plan": original,
-                "rules": [
-                    "NO cambies ni reordenes steps",
-                    "NO inventes acciones nuevas",
-                    "Completa success_spec.expected_state con checks verificables",
-                ],
-            }
-            user_prompt = json.dumps(payload, ensure_ascii=False)
-            try:
-                out = self._call_brain_provider(
-                    provider_name,
-                    provider_cfg,
-                    system_prompt,
-                    user_prompt,
-                    meta={"intention": intention, "planning": True, "purpose": "efe_repair"},
-                )
-            except Exception:
-                return None
-            if not isinstance(out, dict):
-                return None
-            return out if isinstance(out.get("steps"), list) else None
 
-        result = repair_plan_if_needed(
+        return repair_plan_if_needed(
             plan_json,
-            drafter_fn=_drafter_fn,
             receipts_dir=self._default_receipts_dir(),
         )
-        if result.success and isinstance(result.plan, dict):
-            return result.plan, result.receipt_path, None
-        return None, result.receipt_path, result.reason or "missing_efe_final"
 
     def _build_missing_efe_plan(
         self,
@@ -4595,6 +4577,11 @@ class AjaxCore:
         intention: str,
         source: str,
         receipt_path: Optional[str],
+        terminal: Optional[str] = None,
+        waiting_prompt: Optional[str] = None,
+        boundary: Optional[Dict[str, Any]] = None,
+        repair_path: Optional[str] = None,
+        template_id: Optional[str] = None,
         efe_candidate_path: Optional[str] = None,
         efe_candidate_status: Optional[str] = None,
         efe_candidate_reason: Optional[str] = None,
@@ -4603,6 +4590,53 @@ class AjaxCore:
         errors: Optional[List[str]] = None,
     ) -> AjaxPlan:
         plan_id = f"abort-missing-efe-{int(time.time())}"
+        if str(terminal or "").upper() == "WAITING_FOR_USER":
+            prompt = waiting_prompt or "Necesito completar el contrato EFE antes de ejecutar esta mision."
+            meta_wait = {
+                "intention": intention,
+                "source": source,
+                "planning_error": "missing_efe_waiting",
+                "skip_council_review": True,
+                "fail_closed": True,
+                "efe_repair_terminal": "WAITING_FOR_USER",
+            }
+            if receipt_path:
+                meta_wait["efe_repair_receipt"] = receipt_path
+            if repair_path:
+                meta_wait["efe_repair_path"] = repair_path
+            if template_id:
+                meta_wait["efe_repair_template_id"] = template_id
+            if efe_candidate_path:
+                meta_wait["efe_candidate_path"] = efe_candidate_path
+            if efe_candidate_status:
+                meta_wait["efe_candidate_status"] = efe_candidate_status
+            if efe_candidate_reason:
+                meta_wait["efe_candidate_reason"] = efe_candidate_reason
+            if reason:
+                meta_wait["efe_repair_reason"] = reason
+            if isinstance(boundary, dict):
+                meta_wait["efe_boundary"] = boundary
+            if errors:
+                meta_wait["errors"] = list(errors)
+            return AjaxPlan(
+                id=plan_id,
+                summary=f"Await boundary (missing EFE) for {intention}",
+                steps=[
+                    {
+                        "id": "await-efe-boundary",
+                        "intent": f"Completar boundary EFE para {intention}",
+                        "preconditions": {"expected_state": {}},
+                        "action": "await_user_input",
+                        "args": {"prompt": prompt},
+                        "evidence_required": [],
+                        "success_spec": {"expected_state": {}},
+                        "on_fail": "abort",
+                    }
+                ],
+                plan_id=plan_id,
+                metadata=meta_wait,
+                success_spec={"type": "await_user_input"},
+            )
         meta = {
             "intention": intention,
             "source": source,
@@ -4612,6 +4646,10 @@ class AjaxCore:
         }
         if receipt_path:
             meta["efe_repair_receipt"] = receipt_path
+        if repair_path:
+            meta["efe_repair_path"] = repair_path
+        if template_id:
+            meta["efe_repair_template_id"] = template_id
         if efe_candidate_path:
             meta["efe_candidate_path"] = efe_candidate_path
         if efe_candidate_status:
@@ -4620,6 +4658,8 @@ class AjaxCore:
             meta["efe_candidate_reason"] = efe_candidate_reason
         if isinstance(efe_candidate_source_doc, dict):
             meta["efe_candidate_source_doc"] = efe_candidate_source_doc
+        if isinstance(boundary, dict):
+            meta["efe_boundary"] = boundary
         if reason:
             meta["efe_repair_reason"] = reason
         if errors:
@@ -4694,21 +4734,61 @@ class AjaxCore:
         success_spec = self._derive_action_success_spec(action_name, args)
         repair_receipt = None
         if not success_spec:
-            repaired_es, repair_receipt, repair_reason = self._repair_missing_efe_for_action_plan(
+            repair_result = self._repair_missing_efe_for_action_plan(
                 intention=intention,
                 action_name=action_name,
                 args=args,
                 evidence_required=evidence_required,
             )
-            if repaired_es:
-                success_spec = {"expected_state": repaired_es}
+            repair_receipt = getattr(repair_result, "receipt_path", None)
+            if getattr(repair_result, "success", False) and isinstance(getattr(repair_result, "plan", None), dict):
+                repaired_plan = repair_result.plan
+                steps = repaired_plan.get("steps") if isinstance(repaired_plan.get("steps"), list) else []
+                first_step = steps[0] if steps and isinstance(steps[0], dict) else {}
+                repaired_success = (
+                    first_step.get("success_spec") if isinstance(first_step.get("success_spec"), dict) else {}
+                )
+                repaired_es = repaired_success.get("expected_state")
+                if isinstance(repaired_es, dict) and repaired_es:
+                    success_spec = {"expected_state": repaired_es}
+            elif getattr(repair_result, "terminal", "") == "WAITING_FOR_USER":
+                prompt = (
+                    getattr(repair_result, "waiting_prompt", None)
+                    or "Necesito completar el contrato EFE antes de ejecutar esta accion."
+                )
+                return {
+                    "plan_id": f"action:{action_name}-{int(time.time())}",
+                    "description": f"Boundary EFE para {action_name}",
+                    "steps": [
+                        {
+                            "id": "await-efe-boundary",
+                            "intent": f"Completar boundary EFE para {action_name}",
+                            "preconditions": {"expected_state": {}},
+                            "action": "await_user_input",
+                            "args": {"prompt": prompt},
+                            "evidence_required": [],
+                            "success_spec": {"expected_state": {}},
+                            "on_fail": "abort",
+                        }
+                    ],
+                    "success_contract": {"type": "await_user_input"},
+                    "metadata": {
+                        "intention": intention,
+                        "source": "library_action",
+                        "efe_repair_receipt": repair_receipt,
+                        "efe_repair_reason": getattr(repair_result, "reason", None),
+                        "efe_repair_terminal": getattr(repair_result, "terminal", None),
+                        "efe_candidate_path": getattr(repair_result, "candidate_path", None),
+                        "fail_closed": True,
+                    },
+                }
             else:
                 raise LibrarySelectionError(
                     "missing_efe",
                     detail={
                         "action": action_name,
                         "repair_receipt": repair_receipt,
-                        "repair_reason": repair_reason,
+                        "repair_reason": getattr(repair_result, "reason", None),
                     },
                 )
         step = {
@@ -5641,6 +5721,12 @@ class AjaxCore:
                             intention=intention,
                             source=f"brain_invalid_retry:{source_label}",
                             receipt_path=(repair_meta or {}).get("receipt"),
+                            terminal=(repair_meta or {}).get("terminal"),
+                            waiting_prompt=(repair_meta or {}).get("waiting_prompt"),
+                            boundary=(repair_meta or {}).get("boundary"),
+                            repair_path=(repair_meta or {}).get("repair_path"),
+                            template_id=(repair_meta or {}).get("template_id"),
+                            efe_candidate_path=(repair_meta or {}).get("candidate_path"),
                             efe_candidate_source_doc=plan_candidate,
                             reason=(repair_meta or {}).get("reason"),
                             errors=errors[-6:] if isinstance(errors, list) else None,
@@ -5867,6 +5953,12 @@ class AjaxCore:
                         intention=intention,
                         source="brain",
                         receipt_path=(repair_meta or {}).get("receipt"),
+                        terminal=(repair_meta or {}).get("terminal"),
+                        waiting_prompt=(repair_meta or {}).get("waiting_prompt"),
+                        boundary=(repair_meta or {}).get("boundary"),
+                        repair_path=(repair_meta or {}).get("repair_path"),
+                        template_id=(repair_meta or {}).get("template_id"),
+                        efe_candidate_path=(repair_meta or {}).get("candidate_path"),
                         efe_candidate_source_doc=plan_candidate,
                         reason=(repair_meta or {}).get("reason"),
                         errors=errors[-6:] if isinstance(errors, list) else None,
@@ -9898,6 +9990,12 @@ class AjaxCore:
                         intention=mission.intention,
                         source="brain_escalation",
                         receipt_path=(repair_meta or {}).get("receipt"),
+                        terminal=(repair_meta or {}).get("terminal"),
+                        waiting_prompt=(repair_meta or {}).get("waiting_prompt"),
+                        boundary=(repair_meta or {}).get("boundary"),
+                        repair_path=(repair_meta or {}).get("repair_path"),
+                        template_id=(repair_meta or {}).get("template_id"),
+                        efe_candidate_path=(repair_meta or {}).get("candidate_path"),
                         efe_candidate_source_doc=plan_candidate,
                         reason=(repair_meta or {}).get("reason"),
                     )

@@ -83,8 +83,14 @@ validate_plan_with_efe(plan):
     return plan
 
   repaired_plan = efe_repair(plan)
+  # precedence is now explicit and deterministic:
+  # template -> derivation -> candidate -> waiting
   if repaired_plan is complete:
     return repaired_plan
+
+  if repaired_plan.terminal == WAITING_FOR_USER:
+    persist waiting boundary + repair receipt
+    return WAITING_FOR_USER
 
   gap = _emit_missing_efe_gap(...)
   # gap may embed:
@@ -96,6 +102,8 @@ validate_plan_with_efe(plan):
 ```
 
 - `_autogen_missing_efe_candidate()` writes deterministic candidate payloads under `artifacts/efe_candidates/`.
+- `agency/efe_repair.py` now tries typed template resolution first, then deterministic derivation, then candidate autogen.
+- LAB-only auto-materialization is allowed only when the expected_state is bounded/observable and the rollback assumption is explicit.
 - `python bin/ajaxctl verify efe apply-candidate --gap <gap.json> --out <efe_final.json>` materializes an editable final EFE payload without executing any action.
 - `doctor metabolism` reads both recent gaps and `artifacts/efe_candidates/` to surface this backlog.
 

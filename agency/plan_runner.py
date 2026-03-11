@@ -149,10 +149,13 @@ def _expected_state_has_checks(expected: Optional[ExpectedState]) -> bool:
         return False
     windows = expected.get("windows") or []
     files = expected.get("files") or []
+    checks = expected.get("checks") or []
     meta = expected.get("meta") or {}
     if windows:
         return True
     if files:
+        return True
+    if checks:
         return True
     if isinstance(meta, dict) and meta.get("must_be_active"):
         return True

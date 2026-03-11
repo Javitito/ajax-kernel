@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ajax.receipt.efe_repair.v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "created_at",
+    "success",
+    "terminal",
+    "repair_path",
+    "decision_order",
+    "auto_materialized",
+    "auto_materialization_allowed",
+    "auto_materialization_refused_reasons",
+    "verify_evidence_expected",
+    "rollback_assumption",
+    "original_plan_summary",
+    "step_decisions",
+    "legacy_drafter_available",
+    "legacy_drafter_invoked"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ajax.receipt.efe_repair.v1"
+    },
+    "version": {
+      "const": "v1"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "terminal": {
+      "type": "string",
+      "enum": [
+        "DONE",
+        "WAITING_FOR_USER",
+        "GAP_LOGGED"
+      ]
+    },
+    "repair_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "template_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "candidate_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "decision_order": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "auto_materialized": {
+      "type": "boolean"
+    },
+    "auto_materialization_allowed": {
+      "type": "boolean"
+    },
+    "auto_materialization_refused_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verify_evidence_expected": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "rollback_assumption": {
+      "type": "object"
+    },
+    "exact_boundary": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "original_plan_summary": {
+      "type": "object"
+    },
+    "repaired_plan_summary": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "step_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "legacy_drafter_available": {
+      "type": "boolean"
+    },
+    "legacy_drafter_invoked": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

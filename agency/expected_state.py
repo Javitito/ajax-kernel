@@ -5,9 +5,17 @@ files with a simple polling loop.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import socket
+import subprocess
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
+
+from agency.process_utils import pid_running
+from agency.receipt_validator import validate_receipt
 
 
 class WindowExpectation(TypedDict, total=False):
@@ -24,6 +32,7 @@ class FileExpectation(TypedDict, total=False):
 class ExpectedState(TypedDict, total=False):
     windows: List[WindowExpectation]
     files: List[FileExpectation]
+    checks: List[Dict[str, Any]]
     meta: Dict[str, Any]
 
 
@@ -90,12 +99,248 @@ def _collect_file_state(path: str) -> bool:
         return False
 
 
+def _safe_stat(path: str) -> Optional[os.stat_result]:
+    try:
+        return os.stat(path)
+    except Exception:
+        return None
+
+
+def _sha256_file(path: str) -> Optional[str]:
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except Exception:
+        return None
+
+
+def _process_running_by_name(name: str) -> bool:
+    wanted = str(name or "").strip().lower()
+    if not wanted:
+        return False
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        psutil = None  # type: ignore
+    if psutil is not None:
+        try:
+            for proc in psutil.process_iter(["name"]):
+                pname = str((proc.info or {}).get("name") or "").strip().lower()
+                if pname == wanted:
+                    return True
+        except Exception:
+            pass
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+            for line in (proc.stdout or "").splitlines():
+                low = line.lower()
+                if wanted and wanted in low:
+                    return True
+        except Exception:
+            return False
+    return False
+
+
+def _port_is_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except Exception:
+        return False
+
+
+def _verify_single_check(check: Dict[str, Any], *, root_dir: Path) -> Optional[StateDelta]:
+    kind = str(check.get("kind") or "").strip().lower()
+
+    if kind == "fs":
+        path = str(check.get("path") or "").strip()
+        should_exist = bool(check.get("exists", True))
+        exists = _collect_file_state(path)
+        if should_exist and not exists:
+            return StateDelta(
+                expected={"check": check},
+                actual={"exists": False},
+                diff=f"missing file '{path}'",
+                kind=MismatchKind.MISSING,
+            )
+        if (not should_exist) and exists:
+            return StateDelta(
+                expected={"check": check},
+                actual={"exists": True},
+                diff=f"unexpected file '{path}'",
+                kind=MismatchKind.UNEXPECTED,
+            )
+        if not exists:
+            return None
+        stat_result = _safe_stat(path)
+        if check.get("mtime", {}).get("required") and stat_result is None:
+            return StateDelta(
+                expected={"check": check},
+                actual={"stat": None},
+                diff=f"mtime_unavailable:'{path}'",
+                kind=MismatchKind.OTHER,
+            )
+        if check.get("size", {}).get("required") and stat_result is None:
+            return StateDelta(
+                expected={"check": check},
+                actual={"stat": None},
+                diff=f"size_unavailable:'{path}'",
+                kind=MismatchKind.OTHER,
+            )
+        if check.get("sha256", {}).get("required"):
+            digest = _sha256_file(path)
+            if not digest:
+                return StateDelta(
+                    expected={"check": check},
+                    actual={"sha256": None},
+                    diff=f"sha256_unavailable:'{path}'",
+                    kind=MismatchKind.OTHER,
+                )
+        return None
+
+    if kind == "process":
+        pid = check.get("pid")
+        name = str(check.get("name") or "").strip()
+        should_run = bool(check.get("running", True))
+        running = False
+        if isinstance(pid, int):
+            running = pid_running(pid)
+        elif name:
+            running = _process_running_by_name(name)
+        if should_run and not running:
+            return StateDelta(
+                expected={"check": check},
+                actual={"running": False},
+                diff="process_not_running",
+                kind=MismatchKind.MISSING,
+            )
+        if (not should_run) and running:
+            return StateDelta(
+                expected={"check": check},
+                actual={"running": True},
+                diff="process_still_running",
+                kind=MismatchKind.UNEXPECTED,
+            )
+        return None
+
+    if kind == "port":
+        host = str(check.get("host") or "127.0.0.1").strip() or "127.0.0.1"
+        port = int(check.get("port") or 0)
+        should_open = bool(check.get("open", True))
+        is_open = _port_is_open(host, port)
+        if should_open and not is_open:
+            return StateDelta(
+                expected={"check": check},
+                actual={"open": False},
+                diff=f"port_closed:{host}:{port}",
+                kind=MismatchKind.MISSING,
+            )
+        if (not should_open) and is_open:
+            return StateDelta(
+                expected={"check": check},
+                actual={"open": True},
+                diff=f"port_open:{host}:{port}",
+                kind=MismatchKind.UNEXPECTED,
+            )
+        return None
+
+    if kind == "receipt_schema":
+        path = str(check.get("path") or "").strip()
+        expected_schema = str(check.get("schema") or "").strip()
+        if not path:
+            return StateDelta(
+                expected={"check": check},
+                actual={"path": None},
+                diff="receipt_path_missing",
+                kind=MismatchKind.MISMATCH,
+            )
+        report = validate_receipt(root_dir, Path(path))
+        if not bool(report.get("ok")):
+            return StateDelta(
+                expected={"check": check},
+                actual={"report": report},
+                diff="receipt_schema_invalid",
+                kind=MismatchKind.MISMATCH,
+            )
+        if expected_schema and str(report.get("schema_in_receipt") or "").strip() != expected_schema:
+            return StateDelta(
+                expected={"check": check},
+                actual={"schema_in_receipt": report.get("schema_in_receipt")},
+                diff="receipt_schema_mismatch",
+                kind=MismatchKind.MISMATCH,
+            )
+        return None
+
+    if kind == "structured_output":
+        path = str(check.get("path") or "").strip()
+        if not path or not os.path.exists(path):
+            return StateDelta(
+                expected={"check": check},
+                actual={"exists": False},
+                diff="structured_output_missing",
+                kind=MismatchKind.MISSING,
+            )
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception:
+            return StateDelta(
+                expected={"check": check},
+                actual={"parse_ok": False},
+                diff="structured_output_parse_error",
+                kind=MismatchKind.MISMATCH,
+            )
+        root_type = str(check.get("root_type") or "").strip().lower()
+        if root_type == "object" and not isinstance(payload, dict):
+            return StateDelta(
+                expected={"check": check},
+                actual={"payload_type": type(payload).__name__},
+                diff="structured_output_not_object",
+                kind=MismatchKind.MISMATCH,
+            )
+        if root_type == "array" and not isinstance(payload, list):
+            return StateDelta(
+                expected={"check": check},
+                actual={"payload_type": type(payload).__name__},
+                diff="structured_output_not_array",
+                kind=MismatchKind.MISMATCH,
+            )
+        required_keys = check.get("required_keys") if isinstance(check.get("required_keys"), list) else []
+        if required_keys and isinstance(payload, dict):
+            missing = [str(key) for key in required_keys if str(key) not in payload]
+            if missing:
+                return StateDelta(
+                    expected={"check": check},
+                    actual={"keys": sorted(payload.keys())},
+                    diff=f"structured_output_missing_keys:{','.join(missing)}",
+                    kind=MismatchKind.MISSING,
+                )
+        return None
+
+    return StateDelta(
+        expected={"check": check},
+        actual={"supported_kinds": ["fs", "process", "port", "receipt_schema", "structured_output"]},
+        diff=f"unsupported_check_kind:{kind or 'unknown'}",
+        kind=MismatchKind.MISMATCH,
+    )
+
+
 def verify_efe(
     expected_state: ExpectedState,
     *,
     driver: Any = None,
     timeout_s: float = 5.0,
     poll_interval_s: float = 0.3,
+    root_dir: Optional[Path] = None,
 ) -> Tuple[bool, Optional[StateDelta]]:
     """
     Evalúa el ExpectedState contra el estado real. Si todos los checks pasan
@@ -104,6 +349,8 @@ def verify_efe(
     start = time.time()
     windows_exp: List[WindowExpectation] = list(expected_state.get("windows", []) or [])
     files_exp: List[FileExpectation] = list(expected_state.get("files", []) or [])
+    checks_exp: List[Dict[str, Any]] = list(expected_state.get("checks", []) or [])
+    verify_root = Path(root_dir or Path.cwd()).resolve()
 
     last_delta: Optional[StateDelta] = None
     while time.time() - start <= timeout_s:
@@ -170,6 +417,7 @@ def verify_efe(
                 break
 
         file_failure: Optional[StateDelta] = None
+        check_failure: Optional[StateDelta] = None
         if not win_failure:
             for fexp in files_exp:
                 path = fexp.get("path") or ""
@@ -195,9 +443,24 @@ def verify_efe(
                     break
 
         if not win_failure and not file_failure:
+            for check in checks_exp:
+                if not isinstance(check, dict):
+                    check_failure = StateDelta(
+                        expected={"check": check},
+                        actual={"type": type(check).__name__},
+                        diff="invalid_check_shape",
+                        kind=MismatchKind.MISMATCH,
+                    )
+                    break
+                delta = _verify_single_check(check, root_dir=verify_root)
+                if delta is not None:
+                    check_failure = delta
+                    break
+
+        if not win_failure and not file_failure and not check_failure:
             return True, None
 
-        last_delta = win_failure or file_failure
+        last_delta = win_failure or file_failure or check_failure
         time.sleep(poll_interval_s)
 
     if last_delta:
