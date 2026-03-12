@@ -1917,6 +1917,184 @@ class AjaxCore:
             except Exception:
                 pass
 
+    def _waiting_resume_context_from_plan(self, plan: Optional[AjaxPlan]) -> Dict[str, Any]:
+        if not plan or not isinstance(getattr(plan, "metadata", None), dict):
+            return {}
+        meta = plan.metadata or {}
+        context: Dict[str, Any] = {}
+        for key in (
+            "planning_error",
+            "fail_closed",
+            "efe_repair_terminal",
+            "efe_repair_receipt",
+            "efe_repair_path",
+            "efe_repair_template_id",
+            "efe_candidate_path",
+            "efe_candidate_status",
+            "efe_candidate_reason",
+            "efe_boundary",
+            "efe_resume_plan",
+            "efe_candidate_source_doc",
+        ):
+            if key not in meta:
+                continue
+            context[key] = self._safe_serialize(meta.get(key))
+        if plan.plan_id or plan.id:
+            context["waiting_plan_id"] = plan.plan_id or plan.id
+        return context
+
+    def complete_waiting_boundary(
+        self,
+        completion_payload: Dict[str, Any],
+        *,
+        source_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            from agency.waiting_boundary_resume import apply_waiting_boundary_completion, emit_resume_receipt
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "BLOCKED",
+                "reason": f"boundary_resume_unavailable:{type(exc).__name__}",
+                "errors": [str(exc)],
+                "resume_attempted": False,
+                "patch_applied": False,
+                "receipt_paths": [],
+            }
+
+        root_dir = getattr(getattr(self, "config", None), "root_dir", None) or Path(".")
+        payload_source = Path(source_path) if source_path else None
+        outcome = apply_waiting_boundary_completion(
+            root_dir=Path(root_dir),
+            completion_payload=completion_payload,
+            source_path=payload_source,
+        )
+        receipt_paths = list(outcome.get("receipt_paths") or [])
+        if not bool(outcome.get("ok")):
+            return outcome
+
+        mission_id = str(outcome.get("mission_id") or "").strip()
+        waiting_payload_path = outcome.get("waiting_payload_path")
+        completion_path = outcome.get("completion_path")
+        candidate_path = outcome.get("candidate_path")
+        boundary_kind = outcome.get("boundary_kind")
+        completion_source = outcome.get("completion_source")
+        patched_payload = outcome.get("patched_payload")
+
+        try:
+            mission = self._mission_from_waiting_payload(patched_payload)
+        except Exception as exc:
+            receipt_paths.append(
+                emit_resume_receipt(
+                    root_dir=Path(root_dir),
+                    event="resume_outcome",
+                    mission_id=mission_id or None,
+                    boundary_kind=boundary_kind,
+                    completion_source=completion_source,
+                    waiting_payload_path=waiting_payload_path,
+                    completion_path=completion_path,
+                    candidate_path=candidate_path,
+                    validation_ok=True,
+                    patch_applied=True,
+                    resume_attempted=False,
+                    outcome="WAITING_FOR_USER",
+                    detail={"reason": "waiting_payload_rehydrate_failed", "error": str(exc)[:400]},
+                )
+            )
+            outcome["ok"] = False
+            outcome["status"] = "WAITING_FOR_USER"
+            outcome["reason"] = "waiting_payload_rehydrate_failed"
+            outcome["errors"] = [str(exc)]
+            outcome["receipt_paths"] = receipt_paths
+            return outcome
+
+        mission.await_user_input = False
+        mission.permission_question = None
+        mission.ask_user_request = None
+        mission.council_signal = None
+        mission.pending_user_options = []
+        mission.feedback = None
+        mission.status = "IN_PROGRESS"
+        try:
+            if isinstance(mission.notes, dict):
+                mission.notes["_pending_user_options"] = []
+                mission.notes["boundary_resume_requested_utc"] = self._iso_utc()
+                mission.notes["boundary_resume_completion_path"] = completion_path
+        except Exception:
+            pass
+        try:
+            self._last_mission_id = mission.mission_id  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        receipt_paths.append(
+            emit_resume_receipt(
+                root_dir=Path(root_dir),
+                event="mission_resumed",
+                mission_id=mission.mission_id,
+                boundary_kind=boundary_kind,
+                completion_source=completion_source,
+                waiting_payload_path=waiting_payload_path,
+                completion_path=completion_path,
+                candidate_path=candidate_path,
+                validation_ok=True,
+                patch_applied=True,
+                resume_attempted=True,
+                outcome="resume_started",
+                detail={"same_mission_id": True},
+            )
+        )
+
+        self._clear_waiting_mission(mission_id=mission.mission_id)
+        try:
+            result = self.pursue_intent(mission)
+        except Exception as exc:
+            mission.status = "BLOCKED"
+            result = AjaxExecutionResult(
+                success=False,
+                error="boundary_resume_failed",
+                path="waiting_boundary_resume",
+                detail={"error": str(exc)[:400], "mission_id": mission.mission_id},
+                mission_id=mission.mission_id,
+            )
+        if result.mission_id is None:
+            result.mission_id = mission.mission_id
+
+        terminal = (
+            mission.status
+            if isinstance(mission.status, str) and mission.status.strip()
+            else ("DONE" if bool(result.success) else (result.error or "BLOCKED"))
+        )
+        receipt_paths.append(
+            emit_resume_receipt(
+                root_dir=Path(root_dir),
+                event="resume_outcome",
+                mission_id=mission.mission_id,
+                boundary_kind=boundary_kind,
+                completion_source=completion_source,
+                waiting_payload_path=waiting_payload_path,
+                completion_path=completion_path,
+                candidate_path=candidate_path,
+                validation_ok=True,
+                patch_applied=True,
+                resume_attempted=True,
+                outcome=str(terminal),
+                detail={
+                    "success": bool(result.success),
+                    "error": result.error,
+                    "path": result.path,
+                    "same_mission_id": mission.mission_id == str(outcome.get("mission_id") or ""),
+                },
+            )
+        )
+        outcome["ok"] = bool(result.success)
+        outcome["status"] = terminal
+        outcome["resume_attempted"] = True
+        outcome["result"] = self._safe_serialize(result)
+        outcome["receipt_paths"] = receipt_paths
+        outcome["same_mission_id"] = mission.mission_id == str(outcome.get("mission_id") or "")
+        return outcome
+
     def _persist_waiting_mission(
         self,
         mission: MissionState,
@@ -4616,6 +4794,9 @@ class AjaxCore:
                 meta_wait["efe_repair_reason"] = reason
             if isinstance(boundary, dict):
                 meta_wait["efe_boundary"] = boundary
+            if isinstance(efe_candidate_source_doc, dict):
+                meta_wait["efe_resume_plan"] = efe_candidate_source_doc
+                meta_wait["efe_candidate_source_doc"] = efe_candidate_source_doc
             if errors:
                 meta_wait["errors"] = list(errors)
             return AjaxPlan(
@@ -4756,6 +4937,28 @@ class AjaxCore:
                     getattr(repair_result, "waiting_prompt", None)
                     or "Necesito completar el contrato EFE antes de ejecutar esta accion."
                 )
+                resume_plan = {
+                    "plan_id": f"action:{action_name}-{int(time.time())}",
+                    "description": f"Plan directo para {action_name}",
+                    "steps": [
+                        {
+                            "id": "task-1",
+                            "intent": f"Ejecutar {action_name} con parámetros derivados.",
+                            "preconditions": {"expected_state": {}},
+                            "action": action_name,
+                            "args": args,
+                            "evidence_required": evidence_required,
+                            "success_spec": {"expected_state": {}},
+                            "on_fail": "abort",
+                        }
+                    ],
+                    "success_contract": {"type": "check_last_step_status"},
+                    "metadata": {
+                        "intention": intention,
+                        "source": "library_action",
+                        "efe_repair_receipt": repair_receipt,
+                    },
+                }
                 return {
                     "plan_id": f"action:{action_name}-{int(time.time())}",
                     "description": f"Boundary EFE para {action_name}",
@@ -4779,6 +4982,9 @@ class AjaxCore:
                         "efe_repair_reason": getattr(repair_result, "reason", None),
                         "efe_repair_terminal": getattr(repair_result, "terminal", None),
                         "efe_candidate_path": getattr(repair_result, "candidate_path", None),
+                        "efe_boundary": getattr(repair_result, "boundary", None),
+                        "efe_resume_plan": resume_plan,
+                        "efe_candidate_source_doc": resume_plan,
                         "fail_closed": True,
                     },
                 }
@@ -14926,6 +15132,9 @@ class AjaxCore:
                         prompt = str(
                             s.get("intent") or "Necesito confirmación del usuario para continuar."
                         ).strip()
+                    mission.last_plan = plan
+                    mission.pending_plan = plan
+                    mission.feedback = None
                     mission.await_user_input = True
                     mission.permission_question = prompt
                     mission.last_result = self._finalize_ask_user_wait(
@@ -14933,6 +15142,7 @@ class AjaxCore:
                         prompt,
                         source="plan",
                         blocking_reason="await_user_input_step",
+                        extra_context=self._waiting_resume_context_from_plan(plan),
                     )
                     return _AWAIT_USER_SENTINEL
         except Exception:

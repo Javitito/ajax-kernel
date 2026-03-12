@@ -7397,6 +7397,47 @@ def cmd_retry_fresh(args: argparse.Namespace) -> int:
     return 0 if handled else 1
 
 
+def cmd_waiting_complete(args: argparse.Namespace) -> int:
+    payload_file = Path(str(getattr(args, "payload_file", "") or "").strip()).expanduser()
+    if not payload_file.is_absolute():
+        payload_file = (Path.cwd() / payload_file).resolve()
+    if not payload_file.exists():
+        print(f"payload_file_not_found:{payload_file}", file=sys.stderr)
+        return 2
+    try:
+        payload = json.loads(payload_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"payload_file_invalid_json:{exc}", file=sys.stderr)
+        return 2
+    if not isinstance(payload, dict):
+        print("payload_file_must_be_json_object", file=sys.stderr)
+        return 2
+    try:
+        core = _get_core()
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+
+    outcome = core.complete_waiting_boundary(payload, source_path=str(payload_file))
+    if getattr(args, "json", False):
+        print(json.dumps(outcome, ensure_ascii=False, indent=2))
+    else:
+        mission_id = str(outcome.get("mission_id") or "").strip()
+        status = str(outcome.get("status") or "").strip() or "unknown"
+        reason = str(outcome.get("reason") or "").strip()
+        if mission_id:
+            print(f"mission_id={mission_id}")
+        print(f"status={status}")
+        if reason:
+            print(f"reason={reason}")
+        print(json.dumps(outcome, ensure_ascii=False, indent=2))
+    if bool(outcome.get("ok")):
+        return 0
+    if str(outcome.get("status") or "").strip().upper() == "WAITING_FOR_USER":
+        return 1
+    return 2
+
+
 def cmd_lab_snap(args: argparse.Namespace) -> int:
     if capture_lab_snapshot is None:
         print("Snap LAB no disponible (lab_snap no importable).", file=sys.stderr)
@@ -8256,6 +8297,17 @@ def main(argv=None) -> int:
     p_retry_fresh.add_argument("mission_id", help="Mission ID pendiente (waiting_mission.json).")
     p_retry_fresh.add_argument("--json", action="store_true", help="Salida JSON.")
     p_retry_fresh.set_defaults(func=cmd_retry_fresh)
+
+    p_waiting_complete = sub.add_parser(
+        "waiting-complete",
+        help="Completa una boundary WAITING_FOR_USER y reanuda la misma misión.",
+    )
+    p_waiting_complete.add_argument(
+        "payload_file",
+        help="JSON con schema ajax.waiting_boundary_completion.v1.",
+    )
+    p_waiting_complete.add_argument("--json", action="store_true", help="Salida JSON.")
+    p_waiting_complete.set_defaults(func=cmd_waiting_complete)
 
     p_git_status = sub.add_parser("git-status", help="Estado git con timeout y fallback.")
     p_git_status.add_argument("--timeout", type=float, help="Timeout en segundos (override).")

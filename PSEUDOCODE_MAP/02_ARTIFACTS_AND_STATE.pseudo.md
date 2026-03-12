@@ -58,6 +58,7 @@ artifacts/
     subcall_<ts>.txt
   waiting_for_user/
     <mission_id>.json
+    completions/<mission_id>/boundary_completion_<ts>.json
     _archived/<yyyy-mm-dd>/*.json
   state/
     auto_crystallize.flag
@@ -76,6 +77,7 @@ artifacts/
 - `artifacts/history/mission-<id>.json` stores structured mission history for inspector/crystallization flows.
 - `state_dir/waiting_mission.json` stores the resumable mission payload; shipped LAB tooling reads this as `artifacts/state/waiting_mission.json`.
 - `artifacts/waiting_for_user/<mission_id>.json` stores the operator-facing pending payload for the same mission.
+- `artifacts/waiting_for_user/completions/<mission_id>/boundary_completion_<ts>.json` stores auditable structured boundary-completion payloads tied to the same waiting mission.
 - `ops friction gc --apply` archives old `waiting_for_user` payloads into `_archived/<date>/`.
 
 ## Knowledge-Lift Artifacts
@@ -101,6 +103,7 @@ artifacts/
 - `exec_<ts>.json` is written by `_record_exec_receipt()` with schema `ajax.exec_receipt.v1`.
 - `subcall_<ts>.json` is written by `run_subcall()` with schema `ajax.subcall_receipt.v1`.
 - `cloud_canary_<ts>.json` is written by `cloud-canary` with schema `ajax.cloud_canary.v1`.
+- `waiting_boundary_resume_<ts>_<event>.json` is written by `complete_waiting_boundary()` with schema `ajax.receipt.waiting_boundary_resume.v1`.
 - `artifacts/subcalls/subcall_<ts>.json|txt` stores the role output payload sidecar for the same subcall.
 
 ### Receipt validator contract
@@ -125,6 +128,8 @@ doctor_receipts(root_dir, since_min, strict, top_k, summary_only):
   - `ajax.lab.autopilot_tick.v1`
   - `ajax.lab.autopilot_tick.v0`
     -> `ajax.lab.autopilot_tick.v1.schema.json`
+  - `ajax.receipt.waiting_boundary_resume.v1`
+    -> `ajax.receipt.waiting_boundary_resume.v1.schema.json`
   - `ajax.topology_doctor.v0`
   - `ajax.topology_doctor.v1`
     -> `ajax.topology_doctor.v0.schema.json`

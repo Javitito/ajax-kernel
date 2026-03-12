@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ajax.receipt.waiting_boundary_resume.v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "created_at",
+    "event",
+    "mission_id",
+    "boundary_kind",
+    "completion_source",
+    "waiting_payload_path",
+    "completion_path",
+    "validation_ok",
+    "patch_applied",
+    "resume_attempted",
+    "detail"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ajax.receipt.waiting_boundary_resume.v1"
+    },
+    "version": {
+      "const": "v1"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "completion_received",
+        "completion_validated",
+        "completion_refused",
+        "waiting_patched",
+        "mission_resumed",
+        "resume_outcome"
+      ]
+    },
+    "mission_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "boundary_kind": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "completion_source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "waiting_payload_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "completion_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "candidate_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "validation_ok": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "patch_applied": {
+      "type": "boolean"
+    },
+    "resume_attempted": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "detail": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

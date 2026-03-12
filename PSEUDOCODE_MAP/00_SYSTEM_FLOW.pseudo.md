@@ -123,10 +123,20 @@ if plan or runtime needs human clarification:
   write state_dir/waiting_mission.json
   write artifacts/waiting_for_user/<mission_id>.json
   keep same mission_id for resume
+
+if waiting mission exposes a structured boundary (for example efe_boundary_completion):
+  accept ajax.waiting_boundary_completion.v1
+  validate mission_id + boundary_kind + candidate schema before resume
+  patch persisted waiting payload in place
+  rehydrate the same mission_id
+  clear only the active waiting pointer
+  re-enter pursue_intent(...) through the governed path
+  emit receipts: completion_received -> completion_validated|completion_refused -> waiting_patched -> mission_resumed -> resume_outcome
 ```
 
 - `ASK_USER` is non-terminal. The runtime resumes the same mission instead of creating a new one.
 - `ops friction gc --apply` can archive old `waiting_for_user` payloads into `_archived/<date>/`.
+- `python bin/ajaxctl waiting-complete <payload.json>` is the narrow boundary-completion entrypoint for structured WAITING resumes.
 
 ## Verification and Claim Discipline
 
