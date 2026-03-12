@@ -189,6 +189,17 @@ Si solo sirve para un caso → **deuda técnica**.
 
 ---
 
+## 6.1 Continuation Discipline
+
+- Continue autonomously within the assigned mission.
+- Do not ask for confirmation between evidence-backed substeps.
+- Do not broaden scope beyond the mission.
+- Do not introduce architectural refactors unless explicitly authorized.
+- If evidence yields a clear next step, continue.
+- If no clear next step exists, stop and report.
+
+---
+
 ## 7. Relación con modelos
 
 - Los modelos **proponen**.
@@ -362,6 +373,15 @@ Toda salida en modo trabajo debe usar uno de estos formatos:
   ]
 }
 ```
+
+### X.4.1 Morning Report Contract
+
+For Codex-style task reports, the Morning Report MUST include:
+
+## Continuation discipline
+- what I continued automatically
+- what I deliberately refused to expand
+- why I stopped (or why I kept going)
 
 ### X.5 EFE-Repair Loop
 

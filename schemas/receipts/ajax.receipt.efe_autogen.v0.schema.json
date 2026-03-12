@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ajax.receipt.efe_autogen.v0",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "created_at",
+    "ok",
+    "source_path",
+    "efe_candidate_path",
+    "descriptor_kind",
+    "unsupported_action_kind",
+    "hint"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ajax.receipt.efe_autogen.v0"
+    },
+    "version": {
+      "const": "v0"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "source_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "efe_candidate_path": {
+      "type": "string"
+    },
+    "descriptor_kind": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "unsupported_action_kind": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

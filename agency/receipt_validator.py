@@ -53,6 +53,8 @@ def _schema_path_for_receipt(root_dir: Path, receipt_schema: str) -> Optional[Pa
         return schemas_dir / "ajax.lab.session.migrated.v1.schema.json"
     if receipt_schema in {"ajax.lab.autopilot_tick.v1", "ajax.lab.autopilot_tick.v0"}:
         return schemas_dir / "ajax.lab.autopilot_tick.v1.schema.json"
+    if receipt_schema == "ajax.receipt.efe_autogen.v0":
+        return schemas_dir / "ajax.receipt.efe_autogen.v0.schema.json"
     if receipt_schema == "ajax.receipt.efe_repair.v1":
         return schemas_dir / "ajax.receipt.efe_repair.v1.schema.json"
     if receipt_schema in {"ajax.topology_doctor.v0", "ajax.topology_doctor.v1"}:
