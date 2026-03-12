@@ -1,0 +1,30 @@
+# AJAX Kernel - End of Line normalization
+# Prevents CRLF/LF noise across platforms
+
+# Default: auto-detect and normalize to LF on commit
+* text=auto
+
+# Explicit LF for source and config files
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files - no EOL normalization
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.so binary
+*.pyd binary
