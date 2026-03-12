@@ -60,9 +60,17 @@ pursue_intent(intention, mode, rail):
 
   record exec receipt
   write mission history
+  emit crystallization_considered receipt
   maybe_auto_crystallize(...)
   return DONE | WAITING_FOR_USER | GAP_LOGGED
 ```
+
+- In LAB, `auto_crystallize` defaults to on unless `artifacts/state/auto_crystallize.flag` or `AJAX_AUTO_CRYSTALLIZE` disables it.
+- The auto path is guard-railed: PROD writes refusal receipts instead of silently creating episodes.
+- A successful governed LAB run can create:
+  - one deterministic episode keyed by `mission_id + attempt`
+  - zero or one candidate recipe keyed by repeated pattern evidence
+  - a validation receipt plus `promotion_not_attempted` when a habit is not yet earned
 
 ## Provider Snapshot Before Planning
 

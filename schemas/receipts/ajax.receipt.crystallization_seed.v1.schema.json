@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ajax.receipt.crystallization_seed.v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "created_at",
+    "event",
+    "mission_id",
+    "detail"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ajax.receipt.crystallization_seed.v1"
+    },
+    "version": {
+      "const": "v1"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "crystallization_considered",
+        "episode_created",
+        "episode_skipped",
+        "candidate_recipe_created",
+        "candidate_recipe_skipped",
+        "validation_result",
+        "promotion_not_attempted"
+      ]
+    },
+    "mission_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "trigger": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auto_crystallize_enabled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "decision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "episode_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "recipe_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "validation_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "habit_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "detail": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

@@ -16,7 +16,7 @@ Only commands verified in current help output or code are listed here.
 | `python bin/ajaxctl council demo` | Minimal scout -> coder -> auditor -> judge flow without touching code. |
 | `python bin/ajaxctl verify efe apply-candidate --gap <gap.json> --out <efe_final.json>` | Read-only helper that materializes editable EFE from a gap candidate. |
 | `python bin/ajaxctl ops friction gc --dry-run|--apply [--older-than-hours N]` | Safe hygiene for `waiting_for_user` backlog and provider ledger minimum-budget reset. |
-| `python bin/ajaxctl crystallize mission <mission_id>` | Materializes one episode and one candidate recipe from a recorded mission attempt. |
+| `python bin/ajaxctl crystallize mission <mission_id>` | Materializes a deterministic episode from a recorded mission attempt and only creates a candidate recipe when repeated evidence crosses the current threshold. |
 | `python bin/ajaxctl crystallize auto {on,off}` | Toggles post-mission auto-crystallize via a persisted flag. |
 | `python bin/ajaxctl validate recipe <recipe> [--runs N --source episodes]` | Validates a candidate recipe against observed episode evidence only. |
 | `python bin/ajaxctl validate receipt <file-or-glob>` | Schema validation for one or more receipts outside the doctor summary. |
@@ -83,10 +83,10 @@ python bin/ajaxctl doctor metabolism --since-min <minutes>
 
 ## Knowledge Lift and Research Surface
 
-- `crystallize mission` lifts one recorded mission into `episode + candidate recipe` artifacts.
-- `crystallize auto on|off` controls whether the runtime attempts this lift automatically after a mission.
+- `crystallize mission` lifts one recorded mission into an episode and may emit `candidate_recipe_skipped` when repetition or governance evidence is still insufficient.
+- `crystallize auto on|off` controls the persisted override; current runtime defaults to auto-on in LAB and guarded refusal in PROD.
 - `validate recipe` only uses observed episode evidence; replay validation is still rejected by current code.
-- `promote recipe` and `promote eligible` require a prior eligible validation before writing habits.
+- `promote recipe` and `promote eligible` require a prior eligible validation before writing habits; auto-crystallize does not claim habits on its own.
 - `inspect` is the compact read-only entrypoint for recent mission history.
 - `gaps triage` is LAB-only and writes ranked probes for open capability gaps.
 - `research` is the live operator entrypoint for Scout reports; external-search heuristics stay outside canonical pseudocode.

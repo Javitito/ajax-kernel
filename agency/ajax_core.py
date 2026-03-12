@@ -72,9 +72,15 @@ except ImportError:  # pragma: no cover
     MissionHistoryRecorder = None  # type: ignore
 
 try:
-    from agency.crystallization import CrystallizationEngine
+    from agency.crystallization_runtime import (
+        emit_crystallization_considered_receipt,
+        load_auto_crystallize_flag,
+        maybe_auto_crystallize,
+    )
 except ImportError:  # pragma: no cover
-    CrystallizationEngine = None  # type: ignore
+    emit_crystallization_considered_receipt = None  # type: ignore
+    load_auto_crystallize_flag = None  # type: ignore
+    maybe_auto_crystallize = None  # type: ignore
 
 try:
     from agency.actions_catalog import ActionCatalog
@@ -7474,18 +7480,9 @@ class AjaxCore:
         return self.state_dir / "auto_crystallize.flag"
 
     def _load_auto_crystallize_flag(self) -> bool:
-        env = os.getenv("AJAX_AUTO_CRYSTALLIZE")
-        default_env = False
-        if env is not None:
-            default_env = env.strip().lower() not in {"0", "false", "off", ""}
-        flag_path = self._auto_crystallize_flag_path()
-        if flag_path.exists():
-            try:
-                raw = flag_path.read_text(encoding="utf-8").strip().lower()
-                return raw in {"1", "true", "on", "yes"}
-            except Exception:
-                return default_env
-        return default_env
+        if load_auto_crystallize_flag is None:
+            return False
+        return bool(load_auto_crystallize_flag(self.state_dir))
 
     def _emit_episode_and_receipt(
         self,
@@ -7493,71 +7490,69 @@ class AjaxCore:
         *,
         waiting_for_user: bool,
     ) -> Optional[str]:
-        ts = time.time()
-        ts_label = time.strftime("%Y%m%d-%H%M%S", time.gmtime(ts))
-        root_dir = self.config.root_dir
-        receipt_dir = Path(root_dir) / "artifacts" / "receipts"
-        receipt_dir.mkdir(parents=True, exist_ok=True)
-        receipt_path = receipt_dir / f"episode_{ts_label}_{mission.mission_id}.json"
-        payload: Dict[str, Any] = {
-            "schema": "ajax.episode_receipt.v1",
-            "ts": ts,
-            "ts_utc": self._iso_utc(ts),
-            "mission_id": mission.mission_id,
-            "waiting_for_user": bool(waiting_for_user),
-            "skill_id": (
-                mission.notes.get("library_skill_id") if isinstance(mission.notes, dict) else None
-            ),
-            "plan_id": mission.last_plan.plan_id if mission.last_plan else None,
-            "plan_source": (
+        if emit_crystallization_considered_receipt is None:
+            return None
+        rail = None
+        try:
+            if mission.envelope and isinstance(getattr(mission.envelope, "metadata", None), dict):
+                snap0 = mission.envelope.metadata.get("snapshot0")
+                if isinstance(snap0, dict):
+                    rail = snap0.get("rail")
+        except Exception:
+            rail = None
+        if rail is None:
+            rail = self._current_rail()
+        receipt_path = emit_crystallization_considered_receipt(
+            self.config.root_dir,
+            mission_id=mission.mission_id,
+            trigger="auto",
+            rail=str(rail or "lab"),
+            auto_crystallize_enabled=bool(self.auto_crystallize_enabled),
+            waiting_for_user=bool(waiting_for_user),
+            plan_id=mission.last_plan.plan_id if mission.last_plan else None,
+            plan_source=(
                 mission.last_plan.metadata.get("plan_source")
                 if mission.last_plan and mission.last_plan.metadata
                 else None
             ),
-        }
-        if CrystallizationEngine is None:
-            payload["ok"] = False
-            payload["error"] = "crystallization_unavailable"
-            receipt_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            return str(receipt_path)
-        try:
-            engine = CrystallizationEngine(root_dir)
-            res = engine.crystallize_mission(mission.mission_id)
-            payload.update(
-                {
-                    "ok": True,
-                    "episode_path": res.get("episode_path") if isinstance(res, dict) else None,
-                    "recipe_path": res.get("recipe_path") if isinstance(res, dict) else None,
-                    "episode_id": res.get("episode_id") if isinstance(res, dict) else None,
-                }
-            )
-        except Exception as exc:
-            payload["ok"] = False
-            payload["error"] = str(exc)[:200]
-            try:
-                gap_path = None
-                self._emit_crystallize_failed_gap(mission.mission_id, str(exc))
-                payload["gap_path"] = gap_path
-            except Exception:
-                pass
-        receipt_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            skill_id=(
+                mission.notes.get("library_skill_id") if isinstance(mission.notes, dict) else None
+            ),
         )
         try:
-            if isinstance(mission.notes, dict):
+            if receipt_path and isinstance(mission.notes, dict):
                 mission.notes["last_episode_receipt"] = str(receipt_path)
         except Exception:
             pass
-        return str(receipt_path)
+        return receipt_path
 
     def _maybe_auto_crystallize(self, mission: MissionState, *, waiting_for_user: bool) -> None:
-        if waiting_for_user or not self.auto_crystallize_enabled or CrystallizationEngine is None:
+        if maybe_auto_crystallize is None:
             return
+        rail = None
         try:
-            engine = CrystallizationEngine(self.config.root_dir)
-            engine.crystallize_mission(mission.mission_id)
+            if mission.envelope and isinstance(getattr(mission.envelope, "metadata", None), dict):
+                snap0 = mission.envelope.metadata.get("snapshot0")
+                if isinstance(snap0, dict):
+                    rail = snap0.get("rail")
+        except Exception:
+            rail = None
+        if rail is None:
+            rail = self._current_rail()
+        try:
+            result = maybe_auto_crystallize(
+                self.config.root_dir,
+                mission_id=mission.mission_id,
+                rail=str(rail or "lab"),
+                waiting_for_user=bool(waiting_for_user),
+                auto_crystallize_enabled=bool(self.auto_crystallize_enabled),
+                emit_gap=lambda error: self._emit_crystallize_failed_gap(mission.mission_id, error),
+            )
+            if isinstance(mission.notes, dict):
+                mission.notes["last_crystallization"] = result
+                receipt_paths = result.get("receipt_paths")
+                if isinstance(receipt_paths, list) and receipt_paths:
+                    mission.notes["last_crystallization_receipts"] = receipt_paths
         except Exception as exc:
             self._emit_crystallize_failed_gap(mission.mission_id, str(exc))
 

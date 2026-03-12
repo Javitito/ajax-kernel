@@ -16,7 +16,7 @@ artifacts/
     open/
     cancelled/
   episodes/
-    episode_<ts>_<mission_id>.json
+    episode_<mission_id>_attempt<n>.json
   efe_candidates/
     *.json
   gaps/
@@ -37,10 +37,11 @@ artifacts/
     latest.json
     _snapshots/latest_<utc>.json
   recipes/
-    candidates/recipe_<ts>_<intent_class>_<slug>.json
+    candidates/recipe_<intent_class>_<pattern>.json
     validated/validation_<ts>_<recipe>.json
   receipts/
     cloud_canary_<ts>.json
+    crystallization_seed_<ts>_<event>_<mission>.json
     exec_<ts>.json
     subcall_<ts>.json
     friction_gc_v1_<ts>.json
@@ -82,12 +83,13 @@ artifacts/
 
 ## Knowledge-Lift Artifacts
 
-- `artifacts/episodes/episode_<ts>_<mission_id>.json` stores the lifted mission narrative used by recipe validation.
-- `artifacts/recipes/candidates/recipe_*.json` stores candidate recipes generated from crystallized missions.
+- `artifacts/episodes/episode_<mission_id>_attempt<n>.json` stores the durable governed episode linked back to mission/run evidence and pattern metadata.
+- `artifacts/recipes/candidates/recipe_*.json` stores candidate recipes generated only after repeated pattern evidence crosses the deterministic threshold.
 - `artifacts/recipes/validated/validation_<ts>_<recipe>.json` stores eligibility reports produced by `validate recipe`.
 - `artifacts/habits/habit_<intent_class>_v<n>.json` stores promoted habits only after eligible validation.
 - `artifacts/indexes/crystallization_index.json` is the durable episode/recipe/habit index for this pipeline.
 - `artifacts/state/auto_crystallize.flag` is the persisted switch behind `crystallize auto on|off`.
+- `artifacts/receipts/crystallization_seed_*.json` records considered / skipped / created / validated / not-promoted decisions for the LAB learning loop.
 
 ## Health and Provider State
 
@@ -104,6 +106,7 @@ artifacts/
 - `subcall_<ts>.json` is written by `run_subcall()` with schema `ajax.subcall_receipt.v1`.
 - `cloud_canary_<ts>.json` is written by `cloud-canary` with schema `ajax.cloud_canary.v1`.
 - `waiting_boundary_resume_<ts>_<event>.json` is written by `complete_waiting_boundary()` with schema `ajax.receipt.waiting_boundary_resume.v1`.
+- `crystallization_seed_<ts>_<event>_<mission>.json` is written by the crystallization runtime/engine with schema `ajax.receipt.crystallization_seed.v1`.
 - `artifacts/subcalls/subcall_<ts>.json|txt` stores the role output payload sidecar for the same subcall.
 
 ### Receipt validator contract
@@ -130,6 +133,8 @@ doctor_receipts(root_dir, since_min, strict, top_k, summary_only):
     -> `ajax.lab.autopilot_tick.v1.schema.json`
   - `ajax.receipt.waiting_boundary_resume.v1`
     -> `ajax.receipt.waiting_boundary_resume.v1.schema.json`
+  - `ajax.receipt.crystallization_seed.v1`
+    -> `ajax.receipt.crystallization_seed.v1.schema.json`
   - `ajax.topology_doctor.v0`
   - `ajax.topology_doctor.v1`
     -> `ajax.topology_doctor.v0.schema.json`

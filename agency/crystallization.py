@@ -29,8 +29,8 @@ def _slugify(value: str) -> str:
 
 
 def _utc_iso(ts: Optional[float] = None) -> str:
-    dt = _dt.datetime.utcfromtimestamp(ts or time.time()).replace(microsecond=0)
-    return dt.isoformat() + "Z"
+    dt = _dt.datetime.fromtimestamp(ts or time.time(), _dt.timezone.utc).replace(microsecond=0)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 def _stringify_success_spec(spec: Any) -> List[str]:
@@ -66,6 +66,61 @@ DEFAULT_SIGNAL_REGISTRY = {
         "active_window_process": "uia.active_window_process_in",
     },
 }
+CRYSTALLIZATION_RECEIPT_SCHEMA = "ajax.receipt.crystallization_seed.v1"
+EPISODE_SCHEMA = "ajax.crystallization.episode.v1"
+RECIPE_SUPPORTING_EPISODES_MIN = 2
+VALIDATION_RUNS_DEFAULT = 2
+VALIDATION_PASSES_MIN = 2
+AUTO_PROMOTION_REASON = "seed_v1_manual_promotion_required"
+
+
+def emit_crystallization_receipt(
+    root_dir: Path | str,
+    *,
+    event: str,
+    mission_id: Optional[str],
+    trigger: Optional[str] = None,
+    rail: Optional[str] = None,
+    auto_crystallize_enabled: Optional[bool] = None,
+    run_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    reason: Optional[str] = None,
+    episode_path: Optional[str] = None,
+    recipe_path: Optional[str] = None,
+    validation_path: Optional[str] = None,
+    habit_path: Optional[str] = None,
+    evidence_refs: Optional[List[str]] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> str:
+    root = Path(root_dir)
+    receipt_dir = root / "artifacts" / "receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.time()
+    ts_label = time.strftime("%Y%m%d-%H%M%S", time.gmtime(ts))
+    suffix = int((ts - int(ts)) * 1000)
+    mission_slug = _slugify(str(mission_id or "mission"))
+    receipt_path = receipt_dir / f"crystallization_seed_{ts_label}-{suffix:03d}_{event}_{mission_slug}.json"
+    payload = {
+        "schema": CRYSTALLIZATION_RECEIPT_SCHEMA,
+        "version": "v1",
+        "created_at": _utc_iso(ts),
+        "event": event,
+        "mission_id": mission_id,
+        "run_id": run_id,
+        "trigger": trigger,
+        "rail": rail,
+        "auto_crystallize_enabled": auto_crystallize_enabled,
+        "decision": decision,
+        "reason": reason,
+        "episode_path": episode_path,
+        "recipe_path": recipe_path,
+        "validation_path": validation_path,
+        "habit_path": habit_path,
+        "evidence_refs": list(evidence_refs or []),
+        "detail": detail or {},
+    }
+    receipt_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(receipt_path)
 
 
 def _sanitize_args(args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -134,6 +189,144 @@ class CrystallizationEngine:
     def _env_snapshot_path(self) -> Optional[Path]:
         directory = self.artifacts_dir / "health" / "env"
         return _latest_file(directory, "doctor_env_*.txt")
+
+    def _attempt_number(self, attempt_path: Path, attempt: Optional[Dict[str, Any]] = None) -> int:
+        if isinstance(attempt, dict):
+            raw_attempt = attempt.get("attempt")
+            if isinstance(raw_attempt, int):
+                return raw_attempt
+            if isinstance(raw_attempt, str) and raw_attempt.isdigit():
+                return int(raw_attempt)
+        match = re.search(r"_attempt(\d+)\.json$", attempt_path.name)
+        return int(match.group(1)) if match else 0
+
+    def _run_id(self, mission_id: str, attempt_path: Path, attempt: Optional[Dict[str, Any]] = None) -> str:
+        return f"{mission_id}:attempt{self._attempt_number(attempt_path, attempt)}"
+
+    def _governance_summary(self, attempt: Dict[str, Any]) -> Dict[str, Any]:
+        governance = attempt.get("governance")
+        if not isinstance(governance, dict):
+            return {}
+        summary: Dict[str, Any] = {}
+        for key in ("risk_level", "rigor", "approval_mode", "council_required", "verified", "tier", "rail"):
+            value = governance.get(key)
+            if value is not None and value != "":
+                summary[key] = value
+        if not summary:
+            for key, value in governance.items():
+                if value is None or value == "":
+                    continue
+                summary[key] = value
+                if len(summary) >= 4:
+                    break
+        return summary
+
+    def _is_governed_run(self, attempt: Dict[str, Any]) -> bool:
+        governance = attempt.get("governance")
+        if not isinstance(governance, dict):
+            return False
+        return any(value is not None and value not in ("", [], {}) for value in governance.values())
+
+    def _action_signature(self, attempt: Dict[str, Any]) -> List[str]:
+        steps_raw = (attempt.get("plan") or {}).get("steps") or []
+        actions = [str(step.get("action")) for step in steps_raw if isinstance(step, dict) and step.get("action")]
+        return actions or ["noop.wait_for_operator"]
+
+    def _normalized_success_signals(self, success_spec: List[str]) -> List[str]:
+        normalized: List[str] = []
+        canonical = self.signal_registry.get("canonical", set())
+        for sig in success_spec:
+            norm = self._normalize_signal_name(sig)
+            if norm and norm in canonical and norm not in normalized:
+                normalized.append(norm)
+        if not normalized:
+            normalized.append("execution_result.success")
+        return normalized
+
+    def _observed_signals_from_attempt(
+        self,
+        attempt: Dict[str, Any],
+        *,
+        attempt_path: Path,
+        waiting_payload_path: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        execution_res = attempt.get("execution_result") or {}
+        signals: List[Dict[str, Any]] = []
+        if execution_res.get("success") is True:
+            signals.append(
+                {
+                    "name": "execution_result.success",
+                    "value": True,
+                    "ref": str(attempt_path),
+                }
+            )
+        if waiting_payload_path:
+            signals.append({"name": "waiting_payload", "value": True, "ref": waiting_payload_path})
+        return signals
+
+    def _extract_evidence_refs(
+        self,
+        attempt: Dict[str, Any],
+        *,
+        attempt_path: Path,
+        history_path: Optional[Path],
+        snapshot_path: Optional[Path],
+        waiting_payload_path: Optional[str],
+    ) -> List[str]:
+        refs = [str(attempt_path)]
+        if history_path:
+            refs.append(str(history_path))
+        if snapshot_path:
+            refs.append(str(snapshot_path))
+        if waiting_payload_path:
+            refs.append(waiting_payload_path)
+        for candidate in (
+            (attempt.get("execution_result") or {}).get("artifacts"),
+            (attempt.get("execution_result") or {}).get("detail"),
+            attempt.get("evidence"),
+        ):
+            if isinstance(candidate, dict):
+                for value in candidate.values():
+                    if isinstance(value, str) and value not in refs:
+                        refs.append(value)
+                    elif isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str) and item not in refs:
+                                refs.append(item)
+        return refs
+
+    def _pattern_payload(
+        self,
+        *,
+        intent_class: str,
+        attempt: Dict[str, Any],
+        required_signals: List[str],
+        observed_signals: List[str],
+    ) -> Dict[str, Any]:
+        action_signature = self._action_signature(attempt)
+        signal_key = ",".join(required_signals) if required_signals else "execution_result.success"
+        action_key = ">".join(action_signature)
+        pattern_key = f"{_slugify(intent_class)}::{_slugify(action_key)}::{_slugify(signal_key)}"
+        required_set = set(required_signals)
+        observed_set = set(observed_signals)
+        confidence = 1.0
+        if required_set:
+            confidence = round(len(required_set & observed_set) / max(1, len(required_set)), 3)
+        return {
+            "key": pattern_key,
+            "action_signature": action_signature,
+            "required_signals": list(required_signals),
+            "observed_signals": list(observed_signals),
+            "confidence": confidence,
+        }
+
+    def _episode_path_for(self, mission_id: str, attempt_path: Path, attempt: Dict[str, Any]) -> Path:
+        attempt_num = self._attempt_number(attempt_path, attempt)
+        mission_slug = _slugify(mission_id)
+        return self.episodes_dir / f"episode_{mission_slug}_attempt{attempt_num}.json"
+
+    def _recipe_path_for_pattern(self, intent_class: str, pattern_key: str) -> Path:
+        return self.candidate_dir / f"recipe_{_slugify(intent_class)}_{_slugify(pattern_key)}.json"
 
     def _timeline_from_attempt(self, attempt: Dict[str, Any], attempt_path: Path) -> List[Dict[str, Any]]:
         timeline: List[Dict[str, Any]] = []
@@ -226,22 +419,34 @@ class CrystallizationEngine:
         passed: bool,
         signals: List[str],
         episode_path: str,
-        recipe_path: str,
+        recipe_path: Optional[str],
+        pattern_key: Optional[str] = None,
     ) -> None:
         payload = self._load_index_payload()
         episodes = payload.get("episodes")
-        if isinstance(episodes, list):
-            episodes.append(
-                {
-                    "episode_id": episode_id,
-                    "mission_id": mission_id,
-                    "intent_class": intent_class,
-                    "ts": ts,
-                    "pass": passed,
-                    "signals": signals,
-                    "paths": {"episode": episode_path, "recipe_candidate": recipe_path},
-                }
-            )
+        if not isinstance(episodes, list):
+            episodes = []
+            payload["episodes"] = episodes
+        entry = None
+        for item in episodes:
+            if isinstance(item, dict) and item.get("episode_id") == episode_id:
+                entry = item
+                break
+        if entry is None:
+            entry = {}
+            episodes.append(entry)
+        entry.update(
+            {
+                "episode_id": episode_id,
+                "mission_id": mission_id,
+                "intent_class": intent_class,
+                "ts": ts,
+                "pass": passed,
+                "signals": signals,
+                "pattern_key": pattern_key,
+                "paths": {"episode": episode_path, "recipe_candidate": recipe_path},
+            }
+        )
         self._save_index_payload(payload)
 
     def _record_recipe_candidate_index(
@@ -370,7 +575,13 @@ class CrystallizationEngine:
         return summary
 
     # ---------------------------------------------------------------- episodes/recipes
-    def crystallize_mission(self, mission_id: str) -> Dict[str, Any]:
+    def crystallize_mission(
+        self,
+        mission_id: str,
+        *,
+        trigger: str = "manual",
+        require_lab: bool = False,
+    ) -> Dict[str, Any]:
         attempt_path = self._mission_attempt_path(mission_id)
         attempt = _read_json(attempt_path)
         history_path = self._history_path(mission_id)
@@ -379,108 +590,262 @@ class CrystallizationEngine:
         snapshot_doc = _read_json(snapshot_path) if snapshot_path else None
         waiting_payload_path = self._waiting_payload_path(history_doc)
         intent_class = self._intent_class(attempt, mission_id)
+        run_id = self._run_id(mission_id, attempt_path, attempt)
         ts = int(time.time())
-        mission_slug = _slugify(mission_id)
-        episode_id = f"episode_{ts}_{mission_id}"
-        user_goal = (history_doc or {}).get("intent_text") or attempt.get("intent") or ""
-        slots = attempt.get("plan", {}).get("metadata", {}).get("slots") or {}
-        rail = (snapshot_doc or {}).get("rail")
+        rail = str((snapshot_doc or {}).get("rail") or "").strip().lower() or None
         mode = (history_doc or {}).get("mode")
+        execution_res = attempt.get("execution_result") or {}
+        success_spec = _stringify_success_spec((attempt.get("plan") or {}).get("success_spec"))
+        required_signals = self._normalized_success_signals(success_spec)
+        observed_signal_docs = self._observed_signals_from_attempt(
+            attempt,
+            attempt_path=attempt_path,
+            waiting_payload_path=waiting_payload_path,
+        )
+        observed_signals = [
+            self._normalize_signal_name(sig.get("name"))
+            for sig in observed_signal_docs
+            if isinstance(sig, dict) and sig.get("name")
+        ]
+        observed_signals = [sig for sig in observed_signals if sig]
+        evidence_refs = self._extract_evidence_refs(
+            attempt,
+            attempt_path=attempt_path,
+            history_path=history_path,
+            snapshot_path=snapshot_path,
+            waiting_payload_path=waiting_payload_path,
+        )
+        result: Dict[str, Any] = {
+            "ok": True,
+            "mission_id": mission_id,
+            "run_id": run_id,
+            "trigger": trigger,
+            "rail": rail,
+            "episode_created": False,
+            "candidate_recipe_created": False,
+            "validation_status": "not_attempted",
+            "promotion_status": "not_applicable",
+            "receipt_paths": [],
+        }
+
+        skip_reason = None
+        if waiting_payload_path:
+            skip_reason = "mission_waiting_boundary"
+        elif require_lab and rail != "lab":
+            skip_reason = "rail_not_lab"
+        elif execution_res.get("success") is not True:
+            skip_reason = "mission_not_successful"
+        elif not self._is_governed_run(attempt):
+            skip_reason = "ungoverned_run"
+
+        if skip_reason:
+            result["ok"] = False
+            result["skip_reason"] = skip_reason
+            result["receipt_paths"] = [
+                emit_crystallization_receipt(
+                    self.root_dir,
+                    event="episode_skipped",
+                    mission_id=mission_id,
+                    run_id=run_id,
+                    trigger=trigger,
+                    rail=rail,
+                    decision="skipped",
+                    reason=skip_reason,
+                    evidence_refs=evidence_refs,
+                    detail={"require_lab": bool(require_lab)},
+                ),
+                emit_crystallization_receipt(
+                    self.root_dir,
+                    event="candidate_recipe_skipped",
+                    mission_id=mission_id,
+                    run_id=run_id,
+                    trigger=trigger,
+                    rail=rail,
+                    decision="skipped",
+                    reason="no_episode",
+                    evidence_refs=evidence_refs,
+                    detail={"episode_reason": skip_reason},
+                ),
+                emit_crystallization_receipt(
+                    self.root_dir,
+                    event="validation_result",
+                    mission_id=mission_id,
+                    run_id=run_id,
+                    trigger=trigger,
+                    rail=rail,
+                    decision="refused",
+                    reason="no_candidate_recipe",
+                    evidence_refs=evidence_refs,
+                    detail={"episode_reason": skip_reason, "validation_status": "refused"},
+                ),
+            ]
+            return result
+
         doctor_path = self._doctor_path()
         env_path = self._env_snapshot_path()
-        status = "FAILED"
-        execution_res = attempt.get("execution_result") or {}
-        if waiting_payload_path:
-            status = "WAITING_FOR_USER"
-        elif execution_res.get("success"):
-            status = "SUCCESS"
-        elif execution_res:
-            status = "FAILED"
-        success_spec = _stringify_success_spec(attempt.get("plan", {}).get("success_spec"))
-        failure_codes: List[str] = []
-        history_error = (history_doc or {}).get("final_error")
-        if history_error:
-            failure_codes.append(str(history_error))
-        mission_error = attempt.get("mission_error") or {}
-        if mission_error.get("reason"):
-            failure_codes.append(str(mission_error.get("reason")))
-        if mission_error.get("kind"):
-            failure_codes.append(str(mission_error.get("kind")))
-        if not failure_codes and status != "SUCCESS":
-            failure_codes.append("unknown_failure")
-        evidence_refs = [str(attempt_path)]
-        if snapshot_path:
-            evidence_refs.append(str(snapshot_path))
-        if waiting_payload_path:
-            evidence_refs.append(waiting_payload_path)
+        pattern = self._pattern_payload(
+            intent_class=intent_class,
+            attempt=attempt,
+            required_signals=required_signals,
+            observed_signals=observed_signals,
+        )
         timeline = self._timeline_from_attempt(attempt, attempt_path)
-        if waiting_payload_path:
-            timeline.append(
-                {
-                    "t": _utc_iso(),
-                    "event": "ask_user",
-                    "ref": waiting_payload_path,
-                    "notes": (history_doc or {}).get("metadata", {}).get("ask_user_request", {}).get("question"),
-                }
-            )
-        efe_signals = [
-            {"name": "execution_result.success", "value": execution_res.get("success"), "ref": str(attempt_path)}
-        ]
-        if waiting_payload_path:
-            efe_signals.append({"name": "waiting_payload", "value": True, "ref": waiting_payload_path})
+        episode_path = self._episode_path_for(mission_id, attempt_path, attempt)
+        episode_id = episode_path.stem
         episode = {
+            "schema": EPISODE_SCHEMA,
             "episode_id": episode_id,
             "mission_id": mission_id,
+            "run_id": run_id,
+            "source": {
+                "attempt_path": str(attempt_path),
+                "history_path": str(history_path) if history_path else None,
+                "snapshot_path": str(snapshot_path) if snapshot_path else None,
+                "evidence_refs": evidence_refs,
+            },
             "intent": {
                 "intent_class": intent_class,
-                "user_goal_text": user_goal,
-                "slots": slots,
+                "user_goal_text": (history_doc or {}).get("intent_text") or attempt.get("intent") or "",
+                "slots": (attempt.get("plan") or {}).get("metadata", {}).get("slots") or {},
             },
             "context": {
                 "rail": rail,
                 "mode": mode,
+                "governance": self._governance_summary(attempt),
                 "env_fingerprint_ref": str(env_path) if env_path else None,
                 "provider_doctor_ref": str(doctor_path) if doctor_path else None,
             },
+            "pattern": pattern,
             "timeline": timeline,
             "outcome": {
-                "status": status,
-                "failure_codes": failure_codes,
+                "status": "SUCCESS",
+                "failure_codes": [],
                 "evidence_refs": evidence_refs,
             },
             "efe": {
-                "success_spec": success_spec,
-                "observed_signals": efe_signals,
-                "pass": True if status == "SUCCESS" else False if status == "FAILED" else None,
+                "success_spec": required_signals,
+                "observed_signals": observed_signal_docs,
+                "pass": True,
             },
         }
-        observed_signals = [
-            self._normalize_signal_name(sig.get("name"))
-            for sig in efe_signals
-            if isinstance(sig, dict) and sig.get("name")
-        ]
-        recipe = self._build_candidate_recipe(intent_class, attempt, success_spec, episode_id)
         self.episodes_dir.mkdir(parents=True, exist_ok=True)
-        episode_path = self.episodes_dir / f"{episode_id}.json"
         episode_path.write_text(json.dumps(episode, ensure_ascii=False, indent=2), encoding="utf-8")
-        observed_signals = [
-            self._normalize_signal_name(sig.get("name"))
-            for sig in (episode.get("efe", {}).get("observed_signals") or [])
-            if isinstance(sig, dict) and sig.get("name")
-        ]
-        self.candidate_dir.mkdir(parents=True, exist_ok=True)
-        recipe_path = self.candidate_dir / f"recipe_{ts}_{intent_class}_{mission_slug}.json"
+        result.update(
+            {
+                "episode_created": True,
+                "episode_path": str(episode_path),
+                "episode_id": episode_id,
+            }
+        )
+        result["receipt_paths"].append(
+            emit_crystallization_receipt(
+                self.root_dir,
+                event="episode_created",
+                mission_id=mission_id,
+                run_id=run_id,
+                trigger=trigger,
+                rail=rail,
+                decision="created",
+                episode_path=str(episode_path),
+                evidence_refs=evidence_refs,
+                detail={"pattern_key": pattern["key"], "confidence": pattern["confidence"]},
+            )
+        )
+        self._record_episode_index(
+            episode_id=episode_id,
+            mission_id=mission_id,
+            intent_class=intent_class,
+            ts=ts,
+            passed=True,
+            signals=[sig for sig in observed_signals if sig],
+            episode_path=str(episode_path),
+            recipe_path=None,
+            pattern_key=pattern["key"],
+        )
+
+        supporting = list(self._episodes_for_pattern(pattern["key"], rail=rail))
+        supporting_episode_ids = [doc.get("episode_id") for _, doc in supporting if doc.get("episode_id")]
+        supporting_episode_refs = [str(path) for path, _ in supporting]
+        result["supporting_episode_count"] = len(supporting_episode_ids)
+        if len(supporting_episode_ids) < RECIPE_SUPPORTING_EPISODES_MIN:
+            result["skip_reason"] = "supporting_episodes_below_threshold"
+            result["receipt_paths"].append(
+                emit_crystallization_receipt(
+                    self.root_dir,
+                    event="candidate_recipe_skipped",
+                    mission_id=mission_id,
+                    run_id=run_id,
+                    trigger=trigger,
+                    rail=rail,
+                    decision="skipped",
+                    reason="supporting_episodes_below_threshold",
+                    episode_path=str(episode_path),
+                    evidence_refs=evidence_refs,
+                    detail={
+                        "pattern_key": pattern["key"],
+                        "supporting_episode_count": len(supporting_episode_ids),
+                        "supporting_episode_ids": supporting_episode_ids,
+                        "threshold": RECIPE_SUPPORTING_EPISODES_MIN,
+                    },
+                )
+            )
+            result["validation_status"] = "refused"
+            result["receipt_paths"].append(
+                emit_crystallization_receipt(
+                    self.root_dir,
+                    event="validation_result",
+                    mission_id=mission_id,
+                    run_id=run_id,
+                    trigger=trigger,
+                    rail=rail,
+                    decision="refused",
+                    reason="no_candidate_recipe",
+                    episode_path=str(episode_path),
+                    evidence_refs=evidence_refs,
+                    detail={
+                        "validation_status": "refused",
+                        "recipe_reason": "supporting_episodes_below_threshold",
+                    },
+                )
+            )
+            return result
+
+        recipe_path = self._recipe_path_for_pattern(intent_class, pattern["key"])
+        recipe = self._build_candidate_recipe(intent_class, attempt, required_signals, episode_id)
         recipe["recipe_id"] = recipe_path.stem
+        recipe["pattern"] = {
+            **pattern,
+            "supporting_episode_count": len(supporting_episode_ids),
+            "supporting_episode_ids": supporting_episode_ids,
+            "supporting_episode_refs": supporting_episode_refs,
+            "threshold": RECIPE_SUPPORTING_EPISODES_MIN,
+        }
+        recipe["status"] = "candidate"
+        recipe["efe"]["validation_n"] = VALIDATION_RUNS_DEFAULT
+        recipe["efe"]["promotion_threshold"] = {
+            "passes_min": VALIDATION_PASSES_MIN,
+            "max_critical_failures": 0,
+        }
+        recipe["provenance"].update(
+            {
+                "supporting_episode_ids": supporting_episode_ids,
+                "supporting_episode_refs": supporting_episode_refs,
+                "candidate_reason": "supporting_episode_threshold_met",
+            }
+        )
+        self.candidate_dir.mkdir(parents=True, exist_ok=True)
+        recipe_created = not recipe_path.exists()
         recipe_path.write_text(json.dumps(recipe, ensure_ascii=False, indent=2), encoding="utf-8")
         self._record_episode_index(
             episode_id=episode_id,
             mission_id=mission_id,
             intent_class=intent_class,
             ts=ts,
-            passed=status == "SUCCESS",
+            passed=True,
             signals=[sig for sig in observed_signals if sig],
             episode_path=str(episode_path),
             recipe_path=str(recipe_path),
+            pattern_key=pattern["key"],
         )
         self._record_recipe_candidate_index(
             recipe_id=recipe["recipe_id"],
@@ -488,13 +853,85 @@ class CrystallizationEngine:
             candidate_path=str(recipe_path),
             ts=ts,
         )
-        return {
-            "ok": True,
-            "episode_path": str(episode_path),
-            "recipe_path": str(recipe_path),
-            "episode_id": episode_id,
-            "recipe_id": recipe["recipe_id"],
-        }
+        result.update(
+            {
+                "candidate_recipe_created": recipe_created,
+                "recipe_path": str(recipe_path),
+                "recipe_id": recipe["recipe_id"],
+            }
+        )
+        result["receipt_paths"].append(
+            emit_crystallization_receipt(
+                self.root_dir,
+                event="candidate_recipe_created" if recipe_created else "candidate_recipe_skipped",
+                mission_id=mission_id,
+                run_id=run_id,
+                trigger=trigger,
+                rail=rail,
+                decision="created" if recipe_created else "existing",
+                reason=None if recipe_created else "candidate_exists",
+                episode_path=str(episode_path),
+                recipe_path=str(recipe_path),
+                evidence_refs=evidence_refs,
+                detail={
+                    "pattern_key": pattern["key"],
+                    "supporting_episode_count": len(supporting_episode_ids),
+                    "supporting_episode_ids": supporting_episode_ids,
+                },
+            )
+        )
+
+        validation_result = self.validate_recipe(
+            str(recipe_path),
+            runs=VALIDATION_RUNS_DEFAULT,
+            source="episodes",
+            min_signals=max(1, len(required_signals)),
+            rail=rail,
+        )
+        validation_status = "validated" if validation_result.get("eligible") else "refused"
+        result["validation_status"] = validation_status
+        result["validation_path"] = validation_result.get("validation_path")
+        result["receipt_paths"].append(
+            emit_crystallization_receipt(
+                self.root_dir,
+                event="validation_result",
+                mission_id=mission_id,
+                run_id=run_id,
+                trigger=trigger,
+                rail=rail,
+                decision=validation_status,
+                reason=validation_result.get("reason") or ("ok" if validation_result.get("eligible") else "unknown"),
+                episode_path=str(episode_path),
+                recipe_path=str(recipe_path),
+                validation_path=validation_result.get("validation_path"),
+                evidence_refs=evidence_refs,
+                detail={
+                    "validation_status": validation_status,
+                    "summary": validation_result.get("summary"),
+                    "eligible": bool(validation_result.get("eligible")),
+                },
+            )
+        )
+        if validation_result.get("eligible"):
+            result["promotion_status"] = "pending_manual_promotion"
+            result["receipt_paths"].append(
+                emit_crystallization_receipt(
+                    self.root_dir,
+                    event="promotion_not_attempted",
+                    mission_id=mission_id,
+                    run_id=run_id,
+                    trigger=trigger,
+                    rail=rail,
+                    decision="pending_manual_promotion",
+                    reason=AUTO_PROMOTION_REASON,
+                    episode_path=str(episode_path),
+                    recipe_path=str(recipe_path),
+                    validation_path=validation_result.get("validation_path"),
+                    evidence_refs=evidence_refs,
+                    detail={"habit_claimed": False},
+                )
+            )
+        return result
 
     def _build_candidate_recipe(
         self, intent_class: str, attempt: Dict[str, Any], success_spec: List[str], episode_id: str
@@ -693,6 +1130,30 @@ class CrystallizationEngine:
 
         return _iter()
 
+    def _episodes_for_pattern(
+        self, pattern_key: str, *, since_ts: Optional[float] = None, rail: Optional[str] = None
+    ) -> Iterable[Tuple[Path, Dict[str, Any]]]:
+        if not self.episodes_dir.exists():
+            return []
+
+        def _iter() -> Iterable[Tuple[Path, Dict[str, Any]]]:
+            for path in sorted(self.episodes_dir.glob("episode_*.json"), key=lambda p: p.stat().st_mtime):
+                doc = _read_json(path)
+                if (doc.get("pattern") or {}).get("key") != pattern_key:
+                    continue
+                if rail:
+                    doc_rail = (doc.get("context") or {}).get("rail")
+                    if doc_rail and str(doc_rail).lower() != str(rail).lower():
+                        continue
+                if since_ts:
+                    ts = self._episode_ts(doc)
+                    if ts and ts < since_ts:
+                        continue
+                doc["_path"] = str(path)
+                yield path, doc
+
+        return _iter()
+
     def _episode_ts(self, episode: Dict[str, Any]) -> Optional[float]:
         timeline = episode.get("timeline") or []
         if timeline and isinstance(timeline, list):
@@ -726,9 +1187,12 @@ class CrystallizationEngine:
         runs_payload: List[Dict[str, Any]] = []
         req_set = {self._normalize_signal_name(sig) for sig in required_signals if sig}
         signal_threshold = max(0, int(min_signals or 0))
+        pattern_key = (recipe.get("pattern") or {}).get("key")
         for path, episode in episodes:
             if len(runs_payload) >= limit:
                 break
+            if pattern_key and (episode.get("pattern") or {}).get("key") != pattern_key:
+                continue
             efe = episode.get("efe") or {}
             if efe.get("pass") is not True:
                 continue
@@ -837,4 +1301,10 @@ class CrystallizationEngine:
         return version + 1
 
 
-__all__ = ["CrystallizationEngine", "CrystallizationError"]
+__all__ = [
+    "AUTO_PROMOTION_REASON",
+    "CRYSTALLIZATION_RECEIPT_SCHEMA",
+    "CrystallizationEngine",
+    "CrystallizationError",
+    "emit_crystallization_receipt",
+]
