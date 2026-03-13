@@ -19,6 +19,9 @@ artifacts/
     episode_<mission_id>_attempt<n>.json
   efe_candidates/
     *.json
+  driver/
+    launcher/*.log
+    revive/*_{stdout,stderr}.log
   gaps/
     triage_<stamp>.json
     triage_<stamp>.md
@@ -108,6 +111,7 @@ artifacts/
 - `waiting_boundary_resume_<ts>_<event>.json` is written by `complete_waiting_boundary()` with schema `ajax.receipt.waiting_boundary_resume.v1`.
 - `crystallization_seed_<ts>_<event>_<mission>.json` is written by the crystallization runtime/engine with schema `ajax.receipt.crystallization_seed.v1`.
 - `driver_health_checked_<ts>.json`, `driver_revive_*_<ts>.json` are written by the rail-aware revive path with schema `ajax.driver_revive_receipt.v1`.
+- `artifacts/driver/launcher/*.log` is written by `Start-AjaxDriver.ps1`; `artifacts/driver/revive/*_{stdout,stderr}.log` stores the bounded launcher transport logs captured by `_launch_target()`.
 - `artifacts/subcalls/subcall_<ts>.json|txt` stores the role output payload sidecar for the same subcall.
 
 ### Receipt validator contract

@@ -238,6 +238,8 @@ def resolve_driver_revive_target(
             "Bypass",
             "-File",
             _wsl_to_windows_path(target),
+            "-Host",
+            endpoint_n.host,
             "-Port",
             str(endpoint_n.port),
         ],
@@ -380,33 +382,50 @@ def _launch_target(
             }
 
     runner = system_executor.run if system_executor is not None else subprocess.run
+    logs_dir = Path(root_dir) / "artifacts" / "driver" / "revive"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = logs_dir / f"{endpoint.rail}_{endpoint.port}_{_ts_label()}_stdout.log"
+    stderr_path = logs_dir / f"{endpoint.rail}_{endpoint.port}_{_ts_label()}_stderr.log"
     try:
-        proc = runner(
-            target.command,
-            cwd=str(root_dir),
-            check=False,
-            timeout=timeout_s,
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
+        with stdout_path.open("w", encoding="utf-8") as stdout_fh, stderr_path.open("w", encoding="utf-8") as stderr_fh:
+            proc = runner(
+                target.command,
+                cwd=str(root_dir),
+                check=False,
+                timeout=timeout_s,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
+                text=True,
+                errors="replace",
+            )
+        stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace")[:400]
+        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")[:400]
         ok = int(getattr(proc, "returncode", 1) or 0) == 0
         return {
             "ok": ok,
             "returncode": int(getattr(proc, "returncode", 1)),
             "timed_out": False,
             "detail": {
-                "stdout": str(getattr(proc, "stdout", "") or "")[:400],
-                "stderr": str(getattr(proc, "stderr", "") or "")[:400],
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
             },
             "reason": None if ok else f"launch_returncode_{int(getattr(proc, 'returncode', 1))}",
         }
     except subprocess.TimeoutExpired as exc:
+        stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace")[:400] if stdout_path.exists() else ""
+        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")[:400] if stderr_path.exists() else ""
         return {
             "ok": False,
             "returncode": None,
             "timed_out": True,
-            "detail": {"stdout": str(exc.stdout or "")[:400], "stderr": str(exc.stderr or "")[:400]},
+            "detail": {
+                "stdout": stdout_text or str(exc.stdout or "")[:400],
+                "stderr": stderr_text or str(exc.stderr or "")[:400],
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+            },
             "reason": "launch_timeout",
         }
     except Exception as exc:

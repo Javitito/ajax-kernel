@@ -68,6 +68,7 @@ pursue_intent(intention, mode, rail):
 - In LAB, `auto_crystallize` defaults to on unless `artifacts/state/auto_crystallize.flag` or `AJAX_AUTO_CRYSTALLIZE` disables it.
 - The auto path is guard-railed: PROD writes refusal receipts instead of silently creating episodes.
 - Embedded driver revive is rail-aware and fail-closed: `run_driver_revive()` resolves the expected rail endpoint, checks `/health`, skips launch when already healthy, and only attempts a launch against an existing rail target.
+- The canonical repo-root launcher is `Start-AjaxDriver.ps1`: PROD routes to `drivers/os_driver.py`, LAB compatibility calls on `5012` route to `agency.lab_dummy_driver`, and the script exits nonzero when Python/entrypoint/health prerequisites are not met.
 - A successful governed LAB run can create:
   - one deterministic episode keyed by `mission_id + attempt`
   - zero or one candidate recipe keyed by repeated pattern evidence
