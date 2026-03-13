@@ -107,6 +107,7 @@ artifacts/
 - `cloud_canary_<ts>.json` is written by `cloud-canary` with schema `ajax.cloud_canary.v1`.
 - `waiting_boundary_resume_<ts>_<event>.json` is written by `complete_waiting_boundary()` with schema `ajax.receipt.waiting_boundary_resume.v1`.
 - `crystallization_seed_<ts>_<event>_<mission>.json` is written by the crystallization runtime/engine with schema `ajax.receipt.crystallization_seed.v1`.
+- `driver_health_checked_<ts>.json`, `driver_revive_*_<ts>.json` are written by the rail-aware revive path with schema `ajax.driver_revive_receipt.v1`.
 - `artifacts/subcalls/subcall_<ts>.json|txt` stores the role output payload sidecar for the same subcall.
 
 ### Receipt validator contract

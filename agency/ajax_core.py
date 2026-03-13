@@ -24,6 +24,12 @@ import unicodedata
 import requests  # type: ignore
 from agency.leann_query_client import query_leann  # type: ignore
 from agency.lab_control import LabStateStore, DEFAULT_PROBE_TTL_SECONDS
+from agency.driver_revive import (
+    build_driver_client_for_rail,
+    check_driver_health,
+    resolve_driver_endpoint,
+    run_driver_revive,
+)
 from agency.system_executor import SystemExecutor
 
 # Órganos existentes (manejo suave para deps opcionales)
@@ -838,7 +844,10 @@ class AjaxCore:
             self.log.warning("Driver no disponible (WindowsDriverClient no importado)")
             return None
         try:
-            return WindowsDriverClient(timeout_s=getattr(self, "driver_timeout", 5.0))
+            return build_driver_client_for_rail(
+                self._current_rail(),
+                timeout_s=getattr(self, "driver_timeout", 5.0),
+            )
         except Exception as exc:  # pragma: no cover - dependencia externa
             self.log.error("No se pudo inicializar el driver: %s", exc)
             return None
@@ -853,33 +862,15 @@ class AjaxCore:
         return path
 
     def _resolve_driver_host_port(self) -> Tuple[str, int]:
-        env_url = os.getenv("OS_DRIVER_URL") or ""
-        if env_url:
-            raw = env_url if "://" in env_url else f"http://{env_url}"
-            parsed = urllib.parse.urlparse(raw)
-            host = parsed.hostname or "127.0.0.1"
-            try:
-                port = int(parsed.port or 5010)
-            except Exception:
-                port = 5010
-            return host, port
-        env_host = os.getenv("OS_DRIVER_HOST")
-        if env_host:
-            try:
-                port = int(os.getenv("OS_DRIVER_PORT") or 5010)
-            except Exception:
-                port = 5010
-            return env_host, port
-        return "127.0.0.1", 5010
+        endpoint = resolve_driver_endpoint(self._current_rail())
+        return endpoint.host, endpoint.port
 
     def _driver_health(self) -> bool:
-        if not self.driver:
-            return False
         if self._driver_status() == "down":
             return False
         try:
-            res = self.driver.health()
-            ok = bool(res.get("ok", False)) if isinstance(res, dict) else True
+            res = self._driver_health_snapshot()
+            ok = bool(res.get("ok", False)) if isinstance(res, dict) else False
             if ok:
                 self._driver_cb = {"status": "up", "failures": [], "down_since": None}
             return ok
@@ -888,15 +879,22 @@ class AjaxCore:
             return False
 
     def _driver_health_snapshot(self) -> Dict[str, Any]:
-        if not self.driver:
-            return {"ok": False, "simulated": False}
         try:
-            res = self.driver.health()
-            if isinstance(res, dict):
-                return dict(res)
-            return {"ok": True, "simulated": False}
-        except Exception:
-            return {"ok": False, "simulated": False}
+            endpoint = resolve_driver_endpoint(self._current_rail())
+            res = check_driver_health(endpoint)
+            return {
+                "ok": bool(res.get("healthy")),
+                "simulated": bool(res.get("simulated")),
+                "detail": res.get("detail"),
+                "http_status": res.get("http_status"),
+                "url": res.get("url"),
+                "payload": res.get("payload") if isinstance(res.get("payload"), dict) else {},
+                "rail": endpoint.rail,
+                "host": endpoint.host,
+                "port": endpoint.port,
+            }
+        except Exception as exc:
+            return {"ok": False, "simulated": False, "detail": str(exc)[:200]}
 
     def _driver_online(self) -> bool:
         snap = self._driver_health_snapshot()
@@ -919,33 +917,16 @@ class AjaxCore:
         }
 
     def _start_driver(self) -> bool:
-        ps = shutil.which("powershell.exe") or shutil.which("powershell")
-        if not ps:
-            # fallback: ruta típica en Windows desde WSL
-            cand = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-            if os.path.exists(cand):
-                ps = cand
-        if not ps:
-            return False
-        host, port = self._resolve_driver_host_port()
-        repo_posix = str(self.config.root_dir)
-        repo_win = self._wsl_to_windows_path(repo_posix).replace("/", "\\")
-        vpy = os.path.join(repo_win, ".venv_os_driver", "Scripts", "python.exe")
-        py_cmd = vpy if os.path.exists(vpy) else "python"
-        cmd = [
-            ps,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            f"Start-Process -WindowStyle Hidden '{py_cmd}' -ArgumentList 'drivers\\os_driver.py --host {host} --port {port}' -WorkingDirectory '{repo_win}'",
-        ]
         try:
-            self.system_executor.run(cmd, check=False, timeout=10)
-            for _ in range(5):
-                time.sleep(1.5)
-                if self._driver_health():
-                    return True
+            revive = run_driver_revive(
+                root_dir=self.config.root_dir,
+                rail=self._current_rail(),
+                system_executor=self.system_executor,
+            )
+            self._last_driver_revive = revive
+            if bool(revive.get("ok")):
+                self.driver = self._init_driver()
+                return True
             return False
         except Exception as exc:
             self.log.warning("No se pudo arrancar el driver: %s", exc)
@@ -955,9 +936,7 @@ class AjaxCore:
         if self._driver_status() == "down":
             self.log.warning("Circuit breaker: driver en estado DOWN, no se intenta autostart.")
             return
-        if self._driver_health():
-            return
-        self.log.info("Driver no responde; intentando arrancarlo...")
+        self.log.info("Driver revive rail-aware: comprobando salud antes de decidir revive...")
         ok = self._start_driver()
         if not ok:
             self.log.warning("Driver sigue no disponible tras intento de arranque.")
