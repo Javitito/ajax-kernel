@@ -68,6 +68,9 @@ artifacts/
     auto_crystallize.flag
     waiting_mission.json
     fallback_local_model.json
+  pids/
+    prod_os_driver_<port>.pid
+    prod_os_driver_<port>.json
 ```
 
 ## Capability and EFE Artifacts
@@ -112,6 +115,7 @@ artifacts/
 - `crystallization_seed_<ts>_<event>_<mission>.json` is written by the crystallization runtime/engine with schema `ajax.receipt.crystallization_seed.v1`.
 - `driver_health_checked_<ts>.json`, `driver_revive_*_<ts>.json` are written by the rail-aware revive path with schema `ajax.driver_revive_receipt.v1`.
 - `artifacts/driver/launcher/*.log` is written by `Start-AjaxDriver.ps1`; `artifacts/driver/revive/*_{stdout,stderr}.log` stores the bounded launcher transport logs captured by `_launch_target()`.
+- `artifacts/pids/prod_os_driver_<port>.pid|json` is written by `drivers/os_driver.py` while the minimal real PROD entrypoint is alive.
 - `artifacts/subcalls/subcall_<ts>.json|txt` stores the role output payload sidecar for the same subcall.
 
 ### Receipt validator contract
