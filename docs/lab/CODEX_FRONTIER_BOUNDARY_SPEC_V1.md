@@ -1,7 +1,7 @@
 # CODEX_FRONTIER_BOUNDARY_SPEC_V1
 
-Status: LAB boundary spec  
-Scope: Codex/app/thread as possible AJAX harness-frontier  
+Status: LAB boundary spec
+Scope: Codex/app/thread as possible AJAX harness-frontier
 Repo-truth precedence: this spec is subordinate to `AGENTS.md`, `MICROFILM.md`,
 `00_START_HERE_AJAX.md`, repo code, tests, receipts, and current handoff.
 

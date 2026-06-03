@@ -1,8 +1,8 @@
 # CODEX_FRONTIER_PREACTION_CONTRACT_TEMPLATE_V1
 
-Status: LAB template / not runtime enforcement  
-Scope: reusable pre-action contract for Codex-frontier missions  
-Spec: docs/lab/CODEX_FRONTIER_BOUNDARY_SPEC_V1.md  
+Status: LAB template / not runtime enforcement
+Scope: reusable pre-action contract for Codex-frontier missions
+Spec: docs/lab/CODEX_FRONTIER_BOUNDARY_SPEC_V1.md
 Authority: subordinate to repo-truth, `AGENTS.md`, `MICROFILM.md`,
 `00_START_HERE_AJAX.md`, current handoff, tests, receipts, and mission-specific
 user instructions.
